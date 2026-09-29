@@ -347,6 +347,52 @@ fn core_checks() -> usize {
         println!("  SKIP  剪贴板(当前会话不可用)");
     }
 
+    // 回归:剪贴板数据可能不带 NUL 结尾(长度由写入方决定)。
+    // 整块填满非零再放上剪贴板 —— 旧代码会越过分配一路扫,新代码必须
+    // 在 GlobalSize 处停下,绝不返回比实际分配更长的内容。
+    {
+        use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
+        use windows::Win32::System::DataExchange::{
+            CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+        };
+        use windows::Win32::System::Memory::{
+            GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
+        };
+
+        const CF_UNICODETEXT: u32 = 13;
+
+        unsafe {
+            if let Ok(handle) = GlobalAlloc(GMEM_MOVEABLE, 64) {
+                let memory = HGLOBAL(handle.0);
+                let size = GlobalSize(memory);
+                let ptr = GlobalLock(memory) as *mut u8;
+
+                let mut placed = false;
+                if !ptr.is_null() && size >= 2 {
+                    std::ptr::write_bytes(ptr, 0x41, size);
+                    let _ = GlobalUnlock(memory);
+
+                    if OpenClipboard(Some(HWND::default())).is_ok() {
+                        let _ = EmptyClipboard();
+                        placed = SetClipboardData(CF_UNICODETEXT, Some(HANDLE(handle.0))).is_ok();
+                        let _ = CloseClipboard();
+                    }
+                }
+
+                if placed {
+                    let cap = size / 2;
+                    check!(
+                        "非 NUL 结尾的剪贴板数据按分配大小截断",
+                        super::clipboard::get_text()
+                            .is_some_and(|s| s.encode_utf16().count() <= cap)
+                    );
+                } else {
+                    let _ = GlobalFree(Some(memory));
+                }
+            }
+        }
+    }
+
     check!("系统空闲时间可读取", super::idle::idle_seconds() < 86_400);
 
     let _ = std::fs::remove_dir_all(&dir);
