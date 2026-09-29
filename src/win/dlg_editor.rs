@@ -62,8 +62,8 @@ pub fn show(
 ) -> Option<Entry> {
     let base = match existing {
         Some(e) => e.clone(),
+        // id 留空:由 add_entry 统一分配(它在 id 为空时生成,并会把错误捅出去)。
         None => Entry {
-            id: Entry::new_id().unwrap_or_default(),
             created: now_secs(),
             ..Default::default()
         },
@@ -197,7 +197,6 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     ui::set_text(s.username, &result.username);
     ui::set_text(s.password, &result.password);
     ui::set_text(s.url, &result.url);
-    ui::set_text(s.tags, &result.tags.join(", "));
     ui::set_text(s.notes, &result.notes);
 
     // 分类:只能从已创建的里面选,第一项是「未分类」。

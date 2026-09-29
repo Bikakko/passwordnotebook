@@ -28,6 +28,7 @@ const ID_REGEN: usize = 10;
 const ID_COPY: usize = 11;
 const ID_USE: usize = 12;
 const ID_CLOSE: usize = 13;
+const ID_ERROR: usize = 14;
 
 struct GenState {
     use_button: bool,
@@ -40,6 +41,7 @@ struct GenState {
     symbols: HWND,
     no_ambiguous: HWND,
     output: HWND,
+    error: HWND,
 }
 
 pub fn show(owner: HWND, use_button: bool) -> Option<Zeroizing<String>> {
@@ -54,10 +56,12 @@ pub fn show(owner: HWND, use_button: bool) -> Option<Zeroizing<String>> {
         symbols: HWND::default(),
         no_ambiguous: HWND::default(),
         output: HWND::default(),
+        error: HWND::default(),
     });
 
     let state = dialog::open(CLASS, "生成密码", owner, wnd_proc, state, 500, 400);
-    if state.accepted {
+    // 空密码不算成功:生成失败时输出框是空的,别把它当成可用密码交出去。
+    if state.accepted && !state.password.is_empty() {
         Some(state.password.clone())
     } else {
         None
@@ -178,13 +182,14 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
         ui::set_visible(use_btn, false);
     }
     ctl("BUTTON", "关闭", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CLOSE, (392, 316, 76, 34));
+    s.error = ctl("STATIC", "", SS_LEFT, 0, hwnd, ID_ERROR, (16, 286, 452, 24));
 
     let font = app::state().font;
     ui::apply_font_to(
         hwnd,
         &[
             ID_HINT, ID_OUTPUT, ID_LENGTH_LABEL, ID_LENGTH, ID_UPPER, ID_LOWER, ID_DIGITS,
-            ID_SYMBOLS, ID_NOAMB, ID_REGEN, ID_COPY, ID_USE, ID_CLOSE,
+            ID_SYMBOLS, ID_NOAMB, ID_ERROR, ID_REGEN, ID_COPY, ID_USE, ID_CLOSE,
         ],
         font,
     );
@@ -234,6 +239,17 @@ fn regenerate(hwnd: HWND) {
         exclude_ambiguous: ui::is_checked(s.no_ambiguous),
     };
 
-    s.password = Zeroizing::new(generator::generate(&options).unwrap_or_default());
-    ui::set_text(s.output, &s.password);
+    match generator::generate(&options) {
+        Ok(password) => {
+            s.password = Zeroizing::new(password);
+            ui::set_text(s.output, &s.password);
+            ui::set_text(s.error, "");
+        }
+        Err(e) => {
+            // 不静默:清掉密码并把原因显示出来,别让用户拿到空密码还不知道为什么。
+            s.password = Zeroizing::new(String::new());
+            ui::set_text(s.output, "");
+            ui::set_text(s.error, &format!("生成失败:{e}"));
+        }
+    }
 }
