@@ -143,6 +143,34 @@ pub const LVM_SETCOLUMNWIDTH: u32 = LVM_FIRST + 30;
 
 pub const LVNI_SELECTED: u32 = 0x0002;
 
+// ---------- 标签页控件(Tab)----------
+pub const TCM_FIRST: u32 = 0x1300;
+pub const TCM_ADJUSTRECT: u32 = TCM_FIRST + 40;
+pub const MF_POPUP: u32 = 0x0000_0010;
+pub const TCM_GETCURSEL: u32 = TCM_FIRST + 11;
+pub const TCM_SETCURSEL: u32 = TCM_FIRST + 12;
+pub const TCM_HITTEST: u32 = TCM_FIRST + 13;
+pub const TCM_GETITEMCOUNT: u32 = TCM_FIRST + 4;
+pub const TCM_GETITEMW: u32 = TCM_FIRST + 60;
+pub const TCM_SETITEMSIZE: u32 = TCM_FIRST + 41;
+pub const WM_DRAWITEM: u32 = 0x002B;
+/// 标签条控件 → 父窗口:当前选中的标签变了。
+pub const TSM_TAB_CHANGED: u32 = WM_APP + 1;
+pub const ODS_SELECTED: u32 = 0x0001;
+pub const TCS_OWNERDRAWFIXED: u32 = 0x0400;
+pub const DT_CENTER: u32 = 0x0001;
+pub const DT_VCENTER: u32 = 0x0004;
+pub const DT_SINGLELINE: u32 = 0x0020;
+pub const TCM_DELETEALLITEMS: u32 = TCM_FIRST + 9;
+pub const TCM_INSERTITEMW: u32 = TCM_FIRST + 62;
+pub const TCM_SETITEMW: u32 = TCM_FIRST + 61;
+/// TCN_SELCHANGE(WM_NOTIFY 的 code)。
+///
+/// = TCN_FIRST(-550) - 1 = -551,按 u32 表示就是 0xFFFFFDD9。
+/// (之前手写成了 0xFFFFFED9,差 256,导致切换标签页的通知永远匹配不上。)
+pub const TCN_SELCHANGE: u32 = 0xFFFF_FDD9;
+pub const TCS_MULTILINE: u32 = 0x0200;
+
 // 注意:LVCOLUMNW / LVITEMW 的位标志字段是 `windows` crate 的新类型,
 // 因此 LVCF_* / LVIF_* / LVIS_* 一律使用 crate 里的常量,这里不再重复定义。
 

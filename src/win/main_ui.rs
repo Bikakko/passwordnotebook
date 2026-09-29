@@ -17,8 +17,8 @@ use super::sys::*;
 use super::timefmt;
 use super::ui;
 use super::{
-    clipboard, dlg_editor, dlg_generator, dlg_recovery, dlg_settings, dlg_taxonomy, dpapi, hello,
-    idle,
+    clipboard, dlg_editor, dlg_generator, dlg_input, dlg_recovery, dlg_settings, dlg_taxonomy, dpapi,
+    hello, idle,
 };
 
 // ---------- 控件 ID ----------
@@ -55,8 +55,12 @@ const ID_BIN_BTN: usize = 2205;
 const ID_SETTINGS_BTN: usize = 2206;
 const ID_LOCK_BTN: usize = 2207;
 const ID_SEARCH: usize = 2208;
-const ID_CAT_LABEL: usize = 2209;
-const ID_CAT_LIST: usize = 2210;
+const ID_CAT_TABS: usize = 2210;
+
+/// 分类标签页的下标约定:0 = 全部,1 起对应 known_categories()。
+/// 未分类的条目直接显示在「全部」里,不再单独占一个页签。
+const TAB_ALL: i32 = 0;
+const TAB_CATEGORY_BASE: i32 = 1;
 const ID_TAG_LABEL: usize = 2211;
 const ID_TAG_LIST: usize = 2212;
 const ID_LIST: usize = 2213;
@@ -117,8 +121,7 @@ pub struct MainUi {
     pub settings_btn: HWND,
     pub lock_btn: HWND,
     pub search: HWND,
-    pub cat_label: HWND,
-    pub cat_list: HWND,
+    pub cat_tabs: HWND,
     pub tag_label: HWND,
     pub tag_list: HWND,
     pub list: HWND,
@@ -179,8 +182,7 @@ impl MainUi {
             settings_btn: zero,
             lock_btn: zero,
             search: zero,
-            cat_label: zero,
-            cat_list: zero,
+            cat_tabs: zero,
             tag_label: zero,
             tag_list: zero,
             list: zero,
@@ -216,7 +218,7 @@ const ALL_CONTROL_IDS: &[usize] = &[
     ID_CREATE_BTN, ID_CREATE_ERROR,
     ID_GEN_BTN, ID_BIN_BTN, ID_TAXONOMY_BTN,
     ID_SETTINGS_BTN, ID_LOCK_BTN,
-    ID_SEARCH, ID_CAT_LABEL, ID_CAT_LIST, ID_TAG_LABEL, ID_TAG_LIST, ID_LIST, ID_SORT_COMBO,
+    ID_SEARCH, ID_CAT_TABS, ID_TAG_LABEL, ID_TAG_LIST, ID_LIST, ID_SORT_COMBO,
     ID_STATUS,
     ID_BIN_TITLE, ID_BIN_HINT, ID_BIN_LIST, ID_BIN_RESTORE_BTN, ID_BIN_PURGE_BTN,
     ID_BIN_EMPTY_BTN, ID_BIN_BACK_BTN,
@@ -353,8 +355,19 @@ pub fn on_create(hwnd: HWND, lparam: LPARAM) {
     s.settings_btn = button(hwnd, "设置", BS_PUSHBUTTON, ID_SETTINGS_BTN);
     s.lock_btn = button(hwnd, "锁定", BS_PUSHBUTTON, ID_LOCK_BTN);
     s.search = edit(hwnd, ES_AUTOHSCROLL, ID_SEARCH);
-    s.cat_label = text(hwnd, "分类", ID_CAT_LABEL);
-    s.cat_list = listbox(hwnd, ID_CAT_LIST);
+    ui::register_tab_strip_class();
+    s.cat_tabs = ui::create_window(
+        "PnbTabStrip",
+        "",
+        WS_CHILD | WS_TABSTOP | TCS_MULTILINE,
+        0,
+        hwnd,
+        ID_CAT_TABS,
+        0,
+        0,
+        10,
+        10,
+    );
     s.tag_label = text(hwnd, "标签", ID_TAG_LABEL);
     s.tag_list = listbox(hwnd, ID_TAG_LIST);
     s.list = listview(hwnd, ID_LIST);
@@ -441,7 +454,7 @@ pub fn apply_mode(hwnd: HWND) {
     }
     for c in [
         s.gen_btn, s.bin_btn, s.taxonomy_btn, s.settings_btn, s.lock_btn,
-        s.search, s.cat_label, s.cat_list, s.tag_label, s.tag_list, s.list, s.sort_combo,
+        s.search, s.cat_tabs, s.tag_label, s.tag_list, s.list, s.sort_combo,
         s.status,
     ] {
         ui::set_visible(c, main);
@@ -564,23 +577,28 @@ fn layout_inner(hwnd: HWND) {
     let status_h = scale(22);
     let body_h = (ch - top - status_h - margin).max(scale(80));
 
-    let pane_w = scale(220);
-    place(s.cat_label, margin, top, pane_w, scale(20));
-    let cat_h = ((body_h - scale(60)) * 55 / 100).max(scale(40));
-    place(s.cat_list, margin, top + scale(22), pane_w, cat_h);
-    place(s.tag_label, margin, top + scale(26) + cat_h, pane_w, scale(20));
+    // 左侧:标签
+    let pane_w = scale(190);
+    place(s.tag_label, margin, top, pane_w, scale(20));
     place(
         s.tag_list,
         margin,
-        top + scale(48) + cat_h,
+        top + scale(22),
         pane_w,
-        (body_h - scale(48) - cat_h).max(scale(40)),
+        (body_h - scale(22)).max(scale(40)),
     );
 
-    let list_x = margin + pane_w + scale(10);
-    let list_w = (cw - list_x - margin).max(scale(120));
-    place(s.list, list_x, top, list_w, body_h);
-    set_list_columns(s.list, list_w, &[26, 20, 14, 20, 20]);
+    // 右侧:分类标签页只占顶部一条(页签那一行),条目列表放在它下面、
+    // **不与标签控件重叠** —— 标签控件会绘制自己的页面边框,重叠时会把列表盖住。
+    let tabs_x = margin + pane_w + scale(10);
+    let tabs_w = (cw - tabs_x - margin).max(scale(200));
+    let tabs_h = scale(36);
+    place(s.cat_tabs, tabs_x, top, tabs_w, tabs_h);
+
+    let list_y = top + tabs_h + scale(4);
+    let list_h = (body_h - tabs_h - scale(4)).max(scale(60));
+    place(s.list, tabs_x, list_y, tabs_w, list_h);
+    set_list_columns(s.list, tabs_w, &[26, 20, 14, 20, 20]);
 
     place(s.status, margin, ch - status_h, cw - margin * 2, status_h);
 }
@@ -685,32 +703,28 @@ fn display_category(entry: &Entry) -> String {
 
 fn refresh_filters(hwnd: HWND) {
     let s = st(hwnd);
-    let prev_cat = ui::listbox_text(s.cat_list, ui::listbox_index(s.cat_list));
-    let prev_tag = ui::listbox_text(s.tag_list, ui::listbox_index(s.tag_list));
 
-    let vault = &app::state().vault;
-    let categories = vault.known_categories();
-    let tags = vault.known_tags();
-    let has_uncategorized = vault.active_entries().any(|e| e.category.trim().is_empty());
-
-    ui::listbox_clear(s.cat_list);
-    ui::listbox_add(s.cat_list, ALL_CATEGORIES);
-    for c in &categories {
-        ui::listbox_add(s.cat_list, c);
+    // 分类 → 横向标签页(全部 / 未分类 / 各分类)
+    let previous = ui::tabs_index(s.cat_tabs);
+    let categories = app::state().vault.known_categories();
+    ui::tabs_clear(s.cat_tabs);
+    ui::tabs_add(s.cat_tabs, ALL_CATEGORIES);
+    for name in &categories {
+        ui::tabs_add(s.cat_tabs, name);
     }
-    if has_uncategorized {
-        ui::listbox_add(s.cat_list, UNCATEGORIZED);
-    }
+    let last = (TAB_CATEGORY_BASE + categories.len() as i32 - 1).max(TAB_ALL);
+    ui::tabs_set_index(s.cat_tabs, previous.clamp(TAB_ALL, last));
 
+
+    // 标签 → 左侧列表
+    let previous_tag = ui::listbox_text(s.tag_list, ui::listbox_index(s.tag_list));
+    let tags = app::state().vault.known_tags();
     ui::listbox_clear(s.tag_list);
     ui::listbox_add(s.tag_list, ALL_TAGS);
-    for t in &tags {
-        ui::listbox_add(s.tag_list, t);
+    for name in &tags {
+        ui::listbox_add(s.tag_list, name);
     }
-
-    let cat_index = ui::listbox_find(s.cat_list, &prev_cat);
-    ui::send_msg(s.cat_list, LB_SETCURSEL, cat_index.max(0) as usize, 0);
-    let tag_index = ui::listbox_find(s.tag_list, &prev_tag);
+    let tag_index = ui::listbox_find(s.tag_list, &previous_tag);
     ui::send_msg(s.tag_list, LB_SETCURSEL, tag_index.max(0) as usize, 0);
 }
 
@@ -728,18 +742,20 @@ fn refresh_list(hwnd: HWND) {
     let s = st(hwnd);
     let selected = selected_entry_id(hwnd);
 
-    let category = ui::listbox_text(s.cat_list, ui::listbox_index(s.cat_list));
+    let tab = ui::tabs_index(s.cat_tabs);
     let tag = ui::listbox_text(s.tag_list, ui::listbox_index(s.tag_list));
     let query = ui::get_text(s.search).trim().to_lowercase();
     let sort = ui::combo_index(s.sort_combo);
 
     let mut items: Vec<Entry> = app::state().vault.active_entries().cloned().collect();
 
-    if !category.is_empty() && category != ALL_CATEGORIES {
-        if category == UNCATEGORIZED {
-            items.retain(|e| e.category.trim().is_empty());
-        } else {
-            items.retain(|e| e.category == category);
+    match tab {
+        TAB_ALL => {}
+        _ => {
+            let categories = app::state().vault.known_categories();
+            if let Some(name) = categories.get((tab - TAB_CATEGORY_BASE) as usize) {
+                items.retain(|e| e.category == *name);
+            }
         }
     }
     if !tag.is_empty() && tag != ALL_TAGS {
@@ -901,7 +917,6 @@ pub fn on_command(hwnd: HWND, id: usize, code: u16) {
 
         // --- 列表 ---
         ID_SEARCH if code == EN_CHANGE => refresh_list(hwnd),
-        ID_CAT_LIST if code == LBN_SELCHANGE => refresh_list(hwnd),
         ID_TAG_LIST if code == LBN_SELCHANGE => refresh_list(hwnd),
         ID_SORT_COMBO if code == CBN_SELCHANGE => refresh_list(hwnd),
         ID_GEN_BTN if code == BN_CLICKED => {
@@ -985,7 +1000,16 @@ pub fn on_notify(hwnd: HWND, lparam: LPARAM) {
     let s = st(hwnd);
     if header.hwndFrom == s.list && header.code as i32 == NM_DBLCLK {
         edit_selected(hwnd);
+    } else if false {
+        refresh_list(hwnd);
     }
+}
+
+// ---------- 自绘标签页 ----------
+
+/// 标签条通知:用户点了另一个分类标签,重新筛选列表。
+pub fn on_tab_changed(hwnd: HWND) {
+    refresh_list(hwnd);
 }
 
 // ---------- 右键菜单 ----------
@@ -1005,6 +1029,29 @@ pub fn on_context_menu(hwnd: HWND) -> bool {
 
     let cursor = ui::cursor_pos();
     let list = st(hwnd).list;
+    let tabs = st(hwnd).cat_tabs;
+
+    // 1) 分类标签页条上右键 → 分类的增删改
+    if ui::point_in_window(tabs, cursor) {
+        let hit = ui::tabs_hit_test(tabs, cursor);
+        if hit >= TAB_CATEGORY_BASE {
+            ui::tabs_set_index(tabs, hit);
+            refresh_list(hwnd);
+        }
+        let is_category = ui::tabs_index(tabs) >= TAB_CATEGORY_BASE;
+
+        let mut menu = ui::PopupMenu::new();
+        menu.add(CMD_CAT_NEW, "新建分类…");
+        menu.add_item(CMD_CAT_RENAME, "重命名当前分类…", is_category);
+        menu.add_item(CMD_CAT_DELETE, "删除当前分类", is_category);
+        match menu.track(hwnd) {
+            Some(CMD_CAT_NEW) => category_add(hwnd),
+            Some(CMD_CAT_RENAME) => category_rename(hwnd),
+            Some(CMD_CAT_DELETE) => category_delete(hwnd),
+            _ => {}
+        }
+        return true;
+    }
 
     // 只有右键落在**条目列表**范围内才响应;在工具栏、搜索框、左侧分类栏上
     // 右键一律不弹菜单。
@@ -1040,6 +1087,24 @@ pub fn on_context_menu(hwnd: HWND) -> bool {
         menu.add_item(CMD_COPY_USER, "复制用户名", has_username);
         menu.add_item(CMD_OPEN_URL, "复制网址", has_url);
         menu.add_separator();
+
+        // 移动到分类
+        let categories = app::state().vault.known_categories();
+        let current_category = selected_entry_id(hwnd)
+            .and_then(|id| with_entry(hwnd, &id, |e| e.category.clone()))
+            .unwrap_or_default();
+        let mut sub = menu.submenu("移动到分类");
+        for (index, name) in categories.iter().enumerate() {
+            if *name == current_category {
+                continue;
+            }
+            sub.add(CMD_MOVE_BASE + index, name);
+        }
+        if !current_category.is_empty() {
+            sub.add(CMD_MOVE_NONE, "未分类");
+        }
+
+        menu.add_separator();
         menu.add(CMD_EDIT, "编辑");
         menu.add(CMD_DELETE, "删除");
     }
@@ -1063,9 +1128,125 @@ pub fn on_context_menu(hwnd: HWND) -> bool {
         }
         Some(CMD_EDIT) => edit_selected(hwnd),
         Some(CMD_DELETE) => delete_selected(hwnd),
+        Some(id) if id >= CMD_MOVE_BASE => {
+            let name = if id == CMD_MOVE_NONE {
+                String::new()
+            } else {
+                app::state()
+                    .vault
+                    .known_categories()
+                    .get(id - CMD_MOVE_BASE)
+                    .cloned()
+                    .unwrap_or_default()
+            };
+            move_selected_to_category(hwnd, name);
+        }
         _ => {}
     }
     true
+}
+
+// ---------- 分类的增删改 / 移动条目 ----------
+
+const CMD_CAT_NEW: usize = 3010;
+const CMD_CAT_RENAME: usize = 3011;
+const CMD_CAT_DELETE: usize = 3012;
+/// 「移动到分类」子菜单项:4000 起是各分类,CMD_MOVE_NONE 表示「未分类」。
+const CMD_MOVE_BASE: usize = 4000;
+const CMD_MOVE_NONE: usize = 4999;
+
+fn category_add(hwnd: HWND) {
+    let Some(name) = dlg_input::show(hwnd, "新建分类", "请输入分类名称:", "") else {
+        return;
+    };
+    match app::state().vault.add_category(&name) {
+        Ok(()) => {
+            refresh_filters(hwnd);
+            refresh_list(hwnd);
+        }
+        Err(e) => ui::error(hwnd, &e.to_string(), "新建分类失败"),
+    }
+}
+
+/// 当前选中的标签页对应的分类名(不是分类页则为空)。
+fn current_category(hwnd: HWND) -> Option<String> {
+    let tab = ui::tabs_index(st(hwnd).cat_tabs);
+    if tab < TAB_CATEGORY_BASE {
+        return None;
+    }
+    app::state()
+        .vault
+        .known_categories()
+        .get((tab - TAB_CATEGORY_BASE) as usize)
+        .cloned()
+}
+
+fn category_rename(hwnd: HWND) {
+    let Some(old) = current_category(hwnd) else {
+        ui::info(hwnd, "请先选中一个分类标签页。", "提示");
+        return;
+    };
+    let Some(new) = dlg_input::show(hwnd, "重命名分类", "新的分类名称:", &old) else {
+        return;
+    };
+    match app::state().vault.rename_category(&old, &new) {
+        Ok(()) => {
+            refresh_filters(hwnd);
+            refresh_list(hwnd);
+        }
+        Err(e) => ui::error(hwnd, &e.to_string(), "重命名失败"),
+    }
+}
+
+fn category_delete(hwnd: HWND) {
+    let Some(name) = current_category(hwnd) else {
+        ui::info(hwnd, "请先选中一个分类标签页。", "提示");
+        return;
+    };
+
+    let affected = app::state()
+        .vault
+        .active_entries()
+        .filter(|e| e.category == name)
+        .count();
+
+    let message = if affected == 0 {
+        format!("确定删除分类「{name}」吗?")
+    } else {
+        format!("确定删除分类「{name}」吗?该分类下的 {affected} 条记录会变成「未分类」,记录本身不会丢失。")
+    };
+    if !ui::confirm(hwnd, &message, "删除分类") {
+        return;
+    }
+
+    match app::state().vault.remove_category(&name) {
+        Ok(()) => {
+            refresh_filters(hwnd);
+            refresh_list(hwnd);
+        }
+        Err(e) => ui::error(hwnd, &e.to_string(), "删除失败"),
+    }
+}
+
+fn move_selected_to_category(hwnd: HWND, category: String) {
+    let Some(id) = selected_entry_id(hwnd) else {
+        return;
+    };
+    let Some(mut entry) = with_entry(hwnd, &id, |e| e.clone()) else {
+        return;
+    };
+    if entry.category == category {
+        return;
+    }
+
+    entry.category = category;
+    match app::state().vault.update_entry(entry) {
+        Ok(()) => {
+            refresh_filters(hwnd);
+            refresh_list(hwnd);
+        }
+        Err(e) => ui::error(hwnd, &e.to_string(), "移动失败"),
+    }
 }
 
 pub fn on_timer(hwnd: HWND, id: usize) {

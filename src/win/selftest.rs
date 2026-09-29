@@ -53,6 +53,24 @@ pub fn run() -> i32 {
     println!("-- 核心逻辑 --");
     failures += core_checks();
 
+    println!("-- 通用控件版本(决定外观是否现代化)--");
+    match super::ui::module_path("comctl32.dll") {
+        Some(path) => {
+            let modern = path.to_lowercase().contains("winsxs");
+            println!("  comctl32.dll = {path}");
+            if modern {
+                println!("  PASS  已启用 comctl32 v6(现代主题外观)");
+            } else {
+                println!("  FAIL  仍是 v5(Windows 95 风格),manifest 未生效");
+                failures += 1;
+            }
+        }
+        None => println!("  SKIP  未能取得 comctl32 路径"),
+    }
+
+    println!("-- 标签页控件 --");
+    failures += tabs_probe();
+
     println!("-- 窗口生命周期 --");
     let code = super::main_window::run_main_inner(Some(400));
     if code == 0 {
@@ -224,4 +242,148 @@ fn core_checks() -> usize {
 
     let _ = std::fs::remove_dir_all(&dir);
     failures
+}
+
+
+/// 无界面探针:验证自绘标签条的增删与选中逻辑。
+fn tabs_probe() -> usize {
+    use super::sys::*;
+    use super::ui;
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::DefWindowProcW;
+
+    unsafe extern "system" fn probe_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+    }
+
+    let mut failures = 0;
+
+    {
+        let _ = ui::register_class("PnbTabProbe", probe_proc);
+        let host =
+            ui::create_window("PnbTabProbe", "", WS_OVERLAPPED, 0, HWND::default(), 0, 0, 0, 400, 300);
+        if host.is_invalid() {
+            println!("  FAIL  无法创建宿主窗口");
+            return 1;
+        }
+
+        ui::register_tab_strip_class();
+        let tabs = ui::create_window("PnbTabStrip", "", WS_CHILD, 0, host, 1, 0, 0, 380, 200);
+
+        ui::tabs_clear(tabs);
+        ui::tabs_add(tabs, "全部");
+        ui::tabs_add(tabs, "API KEY");
+        ui::tabs_add(tabs, "个人");
+
+        let names = ui::tabs_names();
+        println!("  标签:{names:?}");
+        if names == ["全部", "API KEY", "个人"] {
+            println!("  PASS  标签名保存正确");
+        } else {
+            println!("  FAIL  标签名不对");
+            failures += 1;
+        }
+
+        let first = ui::tabs_index(tabs);
+        ui::tabs_set_index(tabs, 2);
+        let after = ui::tabs_index(tabs);
+        println!("  选中下标:初始={first} 设为2后={after}");
+        if first == 0 && after == 2 {
+            println!("  PASS  选中下标读写正确");
+        } else {
+            println!("  FAIL  选中下标不对");
+            failures += 1;
+        }
+
+        ui::destroy_window(host);
+    }
+
+    failures
+}
+
+
+pub fn preview_requested() -> bool {
+    std::env::args().any(|a| a == "--ui-preview")
+}
+
+/// 只画一条标签条,用来肉眼检查外观(不需要打开数据库)。
+pub fn preview() -> i32 {
+    use super::sys::*;
+    use super::ui;
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DefWindowProcW, DestroyWindow, DispatchMessageW, PeekMessageW, ShowWindow, PM_REMOVE,
+        TranslateMessage, MSG, SW_SHOW, WS_OVERLAPPEDWINDOW,
+    };
+
+    unsafe extern "system" fn host_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+    }
+
+    let _ = ui::register_class("PnbPreviewHost", host_proc);
+    ui::register_tab_strip_class();
+
+    let host = ui::create_window(
+        "PnbPreviewHost",
+        "标签条预览",
+        WS_OVERLAPPEDWINDOW.0,
+        0,
+        HWND::default(),
+        0,
+        0,
+        0,
+        980,
+        240,
+    );
+    let strip = ui::create_window(
+        "PnbTabStrip",
+        "",
+        WS_CHILD | WS_VISIBLE,
+        0,
+        host,
+        1,
+        0,
+        0,
+        960,
+        60,
+    );
+
+    ui::tabs_clear(strip);
+    for name in ["全部", "API KEY", "个人", "一个很长的分类名称", "cloudflare"] {
+        ui::tabs_add(strip, name);
+    }
+    ui::tabs_set_index(strip, 3);
+
+    unsafe {
+        let _ = ShowWindow(host, SW_SHOW);
+    }
+
+    // 跑一小段消息循环,让窗口真正画出来。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut msg = MSG::default();
+    while std::time::Instant::now() < deadline {
+        while unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() } {
+            unsafe {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    unsafe {
+        let _ = DestroyWindow(host);
+    }
+    println!("预览结束");
+    0
 }

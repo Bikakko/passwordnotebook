@@ -3,6 +3,7 @@
 //! 这里把 `windows` crate 的新类型(各种 `XXX_STYLE`、`SHOW_WINDOW_CMD` 等)
 //! 全部消化掉,调用方只需要普通的 u32 / i32,以及 [`sys`](super::sys) 里的常量。
 
+use std::sync::{Mutex, OnceLock};
 use std::ffi::c_void;
 
 use windows::core::{PCWSTR, PWSTR};
@@ -23,12 +24,18 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DestroyMenu, DestroyWindow, GetCursorPos,
     GetDlgItem, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, HMENU, IDC_ARROW,
-    IsZoomed, KillTimer, LoadCursorW, MESSAGEBOX_STYLE, MessageBoxW, MF_GRAYED, MF_SEPARATOR,
-    MF_STRING,
+    IsZoomed, KillTimer, LoadCursorW, MESSAGEBOX_STYLE, MessageBoxW, MF_GRAYED, MF_POPUP,
+    MF_SEPARATOR, MF_STRING,
     NONCLIENTMETRICSW, PostMessageW, RegisterClassW, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
     SendMessageW, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowTextW, ShowWindow,
     SystemParametersInfoW, TrackPopupMenu, CS_HREDRAW, CS_VREDRAW, TPM_RETURNCMD, TPM_RIGHTBUTTON,
     WINDOW_EX_STYLE, WINDOW_LONG_PTR_INDEX, WINDOW_STYLE, WM_NULL, WNDCLASSW, WNDCLASS_STYLES,
+    DefWindowProcW,
+    GetParent,
+    WM_PAINT,
+    WM_LBUTTONDOWN,
+    WM_SETFONT,
+    WM_ERASEBKGND,
 };
 
 use super::sys::*;
@@ -712,12 +719,28 @@ pub fn redraw_all(hwnd: HWND) {
 /// 右键弹出菜单。菜单项 id 由调用方给定,`track` 返回用户选择的那一项。
 pub struct PopupMenu {
     handle: HMENU,
+    /// 作为子菜单挂到父菜单上时由父菜单负责销毁,自己不能再 DestroyMenu。
+    owned: bool,
 }
 
 impl PopupMenu {
     pub fn new() -> Self {
         Self {
             handle: unsafe { CreatePopupMenu() }.unwrap_or_default(),
+            owned: true,
+        }
+    }
+
+    /// 新建一个子菜单并挂到当前菜单上;返回的子菜单不可再单独销毁。
+    pub fn submenu(&mut self, text: &str) -> PopupMenu {
+        let inner = unsafe { CreatePopupMenu() }.unwrap_or_default();
+        let w = Wz::new(text);
+        unsafe {
+            let _ = AppendMenuW(self.handle, MF_POPUP, inner.0 as usize, w.pcwstr());
+        }
+        PopupMenu {
+            handle: inner,
+            owned: false,
         }
     }
 
@@ -779,7 +802,7 @@ impl Default for PopupMenu {
 
 impl Drop for PopupMenu {
     fn drop(&mut self) {
-        if !self.handle.is_invalid() {
+        if self.owned && !self.handle.is_invalid() {
             unsafe {
                 let _ = DestroyMenu(self.handle);
             }
@@ -817,6 +840,308 @@ struct LvHitTestInfo {
     flags: u32,
     i_item: i32,
     i_sub_item: i32,
+}
+
+// ---------- 分类标签条(自绘,Excel 风格)----------
+//
+// 不用 SysTabControl32:它的颜色由主题写死,做不出「选中 = 白色卡片 + 彩色下划线」
+// 的样式,而且它的「页面区」会和压在它上面的列表控件打架。
+// 这里是一个普通的子窗口,自己绘制、自己命中测试。
+
+/// 用给定字体测量一段文字的像素宽度。
+pub fn text_width(hwnd: HWND, font: HFONT, text: &str) -> i32 {
+    use windows::Win32::Graphics::Gdi::GetTextExtentPoint32W;
+
+    let wide: Vec<u16> = text.encode_utf16().collect();
+    unsafe {
+        let dc = windows::Win32::Graphics::Gdi::GetDC(Some(hwnd));
+        if dc.is_invalid() {
+            return 0;
+        }
+        let old = if font.is_invalid() {
+            Default::default()
+        } else {
+            windows::Win32::Graphics::Gdi::SelectObject(dc, HGDIOBJ(font.0))
+        };
+        let mut size = windows::Win32::Foundation::SIZE::default();
+        let ok = GetTextExtentPoint32W(dc, &wide, &mut size);
+        if !old.is_invalid() {
+            windows::Win32::Graphics::Gdi::SelectObject(dc, old);
+        }
+        let _ = windows::Win32::Graphics::Gdi::ReleaseDC(Some(hwnd), dc);
+        if ok.as_bool() { size.cx } else { 0 }
+    }
+}
+
+/// 取已加载模块的路径(用于判断 comctl32 是 v5 还是 v6)。
+pub fn module_path(name: &str) -> Option<String> {
+    use windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW};
+
+    let wide = Wz::new(name);
+    let module = unsafe { GetModuleHandleW(wide.pcwstr()) }.ok()?;
+    let mut buf = vec![0u16; 512];
+    let len = unsafe { GetModuleFileNameW(Some(module), &mut buf) };
+    Some(String::from_utf16_lossy(&buf[..len as usize]))
+}
+
+struct TabStrip {
+    names: Vec<String>,
+    selected: i32,
+    font: HFONT,
+}
+
+// 界面只有一个标签条、且只在 GUI 线程访问;HFONT 只是个句柄。
+unsafe impl Send for TabStrip {}
+
+fn tab_strip() -> &'static Mutex<TabStrip> {
+    static STRIP: OnceLock<Mutex<TabStrip>> = OnceLock::new();
+    STRIP.get_or_init(|| {
+        Mutex::new(TabStrip {
+            names: Vec::new(),
+            selected: 0,
+            font: HFONT::default(),
+        })
+    })
+}
+
+// COLORREF 是 BGR 序。
+const STRIP_BG: u32 = 0x00F5_F5F5; // #F5F5F5 未选中的底色
+const STRIP_CARD_BG: u32 = 0x00FF_FFFF; // 选中:白色卡片
+const STRIP_TEXT: u32 = 0x0046_4646; // #464646
+const STRIP_TEXT_ON: u32 = 0x0016_1616;
+const STRIP_SEPARATOR: u32 = 0x00DC_DCDC; // #DCDCDC
+const STRIP_ACCENT: u32 = 0x00EB_6F2F; // #2F6FEB 选中下划线
+
+/// 标签条上的尺寸(已按 DPI 缩放):(左右内边距, 最小宽度, 下划线高度)
+fn strip_metrics(hwnd: HWND) -> (i32, i32, i32) {
+    let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96) as f32;
+    let s = |v: i32| (v as f32 * dpi / 96.0).round() as i32;
+    (s(18), s(72), s(3))
+}
+
+/// 每个标签的 [left, right)。不缓存,总是现算,免得和外框尺寸不同步。
+fn strip_layout(hwnd: HWND, names: &[String], font: HFONT) -> Vec<(i32, i32)> {
+    let (pad, min_w, _) = strip_metrics(hwnd);
+    let mut out = Vec::with_capacity(names.len());
+    let mut x = 0;
+    for name in names {
+        let text_w = text_width(hwnd, font, name);
+        let width = (text_w + pad * 2).max(min_w);
+        out.push((x, x + width));
+        x += width;
+    }
+    out
+}
+
+unsafe fn paint_strip(hwnd: HWND) {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::Graphics::Gdi::{
+        BeginPaint, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect, SelectObject,
+        SetBkMode, SetTextColor, BACKGROUND_MODE, DRAW_TEXT_FORMAT, PAINTSTRUCT,
+    };
+
+    let mut ps = PAINTSTRUCT::default();
+    let hdc = unsafe { BeginPaint(hwnd, &mut ps) };
+
+    let (client_w, client_h) = client_size(hwnd);
+    let (_, _, accent_h) = strip_metrics(hwnd);
+
+    let (names, selected, font) = {
+        let strip = tab_strip().lock().unwrap();
+        (strip.names.clone(), strip.selected, strip.font)
+    };
+    let layout = strip_layout(hwnd, &names, font);
+
+    unsafe {
+        let full = RECT {
+            left: 0,
+            top: 0,
+            right: client_w,
+            bottom: client_h,
+        };
+        let background = CreateSolidBrush(COLORREF(STRIP_BG));
+        FillRect(hdc, &full, background);
+        let _ = DeleteObject(HGDIOBJ(background.0));
+
+        let old_font = if font.is_invalid() {
+            Default::default()
+        } else {
+            SelectObject(hdc, HGDIOBJ(font.0))
+        };
+        SetBkMode(hdc, BACKGROUND_MODE(1)); // TRANSPARENT
+
+        for (index, name) in names.iter().enumerate() {
+            let (left, right) = layout[index];
+            let chosen = index as i32 == selected;
+            let mut rect = RECT {
+                left,
+                top: 0,
+                right,
+                bottom: client_h,
+            };
+
+            if chosen {
+                let card = CreateSolidBrush(COLORREF(STRIP_CARD_BG));
+                FillRect(hdc, &rect, card);
+                let _ = DeleteObject(HGDIOBJ(card.0));
+
+                let accent = CreateSolidBrush(COLORREF(STRIP_ACCENT));
+                let underline = RECT {
+                    left,
+                    top: (client_h - accent_h).max(0),
+                    right,
+                    bottom: client_h,
+                };
+                FillRect(hdc, &underline, accent);
+                let _ = DeleteObject(HGDIOBJ(accent.0));
+            } else {
+                let separator = CreateSolidBrush(COLORREF(STRIP_SEPARATOR));
+                let inset = (client_h / 5).max(2);
+                let line = RECT {
+                    left: right - 1,
+                    top: inset,
+                    right,
+                    bottom: client_h - inset,
+                };
+                FillRect(hdc, &line, separator);
+                let _ = DeleteObject(HGDIOBJ(separator.0));
+            }
+
+            let mut wide: Vec<u16> = name.encode_utf16().collect();
+            SetTextColor(
+                hdc,
+                COLORREF(if chosen { STRIP_TEXT_ON } else { STRIP_TEXT }),
+            );
+            DrawTextW(
+                hdc,
+                &mut wide,
+                &mut rect,
+                DRAW_TEXT_FORMAT(DT_CENTER | DT_VCENTER | DT_SINGLELINE),
+            );
+        }
+
+        if !old_font.is_invalid() {
+            SelectObject(hdc, old_font);
+        }
+        let _ = EndPaint(hwnd, &ps);
+    }
+}
+
+unsafe extern "system" fn strip_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match msg {
+        WM_SETFONT => {
+            tab_strip().lock().unwrap().font = HFONT(wparam.0 as *mut core::ffi::c_void);
+            invalidate(hwnd);
+            LRESULT(0)
+        }
+        WM_ERASEBKGND => LRESULT(1), // 背景全部由 WM_PAINT 负责,避免闪烁
+        WM_PAINT => {
+            unsafe { paint_strip(hwnd) };
+            LRESULT(0)
+        }
+        WM_LBUTTONDOWN => {
+            let x = (lparam.0 & 0xFFFF) as u16 as i32;
+            let index = {
+                let (names, font) = {
+                    let strip = tab_strip().lock().unwrap();
+                    (strip.names.clone(), strip.font)
+                };
+                let layout = strip_layout(hwnd, &names, font);
+                layout
+                    .iter()
+                    .position(|(left, right)| x >= *left && x < *right)
+                    .map(|i| i as i32)
+                    .unwrap_or(-1)
+            };
+
+            if index >= 0 {
+                let changed = {
+                    let mut strip = tab_strip().lock().unwrap();
+                    let changed = strip.selected != index;
+                    strip.selected = index;
+                    changed
+                };
+                if changed {
+                    // 通知父窗口重新筛选。注意此时不持有锁。
+                    let parent = unsafe { GetParent(hwnd) }.unwrap_or_default();
+                    unsafe {
+                        SendMessageW(
+                            parent,
+                            TSM_TAB_CHANGED,
+                            Some(WPARAM(index as usize)),
+                            Some(LPARAM(hwnd.0 as isize)),
+                        );
+                    }
+                }
+                invalidate(hwnd);
+            }
+            LRESULT(0)
+        }
+        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+    }
+}
+
+/// 注册标签条窗口类(重复注册会被忽略)。
+pub fn register_tab_strip_class() {
+    let _ = register_class("PnbTabStrip", strip_proc);
+}
+
+pub fn tabs_clear(hwnd: HWND) {
+    {
+        let mut strip = tab_strip().lock().unwrap();
+        strip.names.clear();
+        strip.selected = 0;
+    }
+    invalidate(hwnd);
+}
+
+pub fn tabs_add(hwnd: HWND, text: &str) -> i32 {
+    let index = {
+        let mut strip = tab_strip().lock().unwrap();
+        strip.names.push(text.to_string());
+        strip.names.len() as i32 - 1
+    };
+    invalidate(hwnd);
+    index
+}
+
+pub fn tabs_index(_hwnd: HWND) -> i32 {
+    tab_strip().lock().unwrap().selected
+}
+
+pub fn tabs_set_index(hwnd: HWND, index: i32) {
+    let changed = {
+        let mut strip = tab_strip().lock().unwrap();
+        let changed = strip.selected != index;
+        strip.selected = index;
+        changed
+    };
+    if changed {
+        invalidate(hwnd);
+    }
+}
+
+/// 所有标签的名字(测试用)。
+pub fn tabs_names() -> Vec<String> {
+    tab_strip().lock().unwrap().names.clone()
+}
+
+pub fn tabs_hit_test(hwnd: HWND, screen_pt: POINT) -> i32 {
+    let local = screen_to_client(hwnd, screen_pt);
+    let (names, font) = {
+        let strip = tab_strip().lock().unwrap();
+        (strip.names.clone(), strip.font)
+    };
+    strip_layout(hwnd, &names, font)
+        .iter()
+        .position(|(left, right)| local.x >= *left && local.x < *right)
+        .map(|i| i as i32)
+        .unwrap_or(-1)
 }
 
 /// 命中测试:返回屏幕坐标 `screen_pt` 落在 ListView 的哪一行(负数表示没有)。

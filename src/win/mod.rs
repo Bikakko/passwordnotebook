@@ -18,6 +18,7 @@ pub mod ui;
 mod dialog;
 mod dlg_editor;
 mod dlg_generator;
+mod dlg_input;
 mod dlg_recovery;
 mod dlg_settings;
 mod dlg_taxonomy;
@@ -30,7 +31,9 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HWND};
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 use windows::Win32::System::Threading::CreateMutexW;
-use windows::Win32::UI::Controls::{InitCommonControlsEx, INITCOMMONCONTROLSEX, ICC_LISTVIEW_CLASSES};
+use windows::Win32::UI::Controls::{
+    InitCommonControlsEx, ICC_LISTVIEW_CLASSES, ICC_TAB_CLASSES, INITCOMMONCONTROLSEX,
+};
 use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
@@ -61,11 +64,21 @@ pub fn run() -> i32 {
         };
         let _ = InitCommonControlsEx(&controls);
 
+        let tabs = INITCOMMONCONTROLSEX {
+            dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
+            dwICC: ICC_TAB_CLASSES,
+        };
+        let _ = InitCommonControlsEx(&tabs);
+
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
     }
 
     if selftest::requested() {
         return selftest::run();
+    }
+
+    if selftest::preview_requested() {
+        return selftest::preview();
     }
 
     // 单实例:第二次启动时把已有窗口拉到前台,避免两个进程同时占着密码本文件。

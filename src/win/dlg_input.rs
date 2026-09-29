@@ -1,0 +1,130 @@
+//! 单行文本输入对话框(新建/重命名分类或标签用)。
+
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::UI::WindowsAndMessaging::DefWindowProcW;
+
+use super::app;
+use super::{dialog, sys::*, ui};
+
+const CLASS: &str = "PnbDlgInput";
+
+const ID_PROMPT: usize = 1;
+const ID_EDIT: usize = 2;
+const ID_OK: usize = 3;
+const ID_CANCEL: usize = 4;
+
+struct InputState {
+    prompt: String,
+    edit: HWND,
+    accepted: bool,
+    value: String,
+}
+
+/// 弹出一个单行输入框;确定返回 Some(文本),取消返回 None。
+pub fn show(owner: HWND, title: &str, prompt: &str, initial: &str) -> Option<String> {
+    let state = Box::new(InputState {
+        prompt: prompt.to_string(),
+        edit: HWND::default(),
+        accepted: false,
+        value: initial.to_string(),
+    });
+
+    let state = dialog::open(CLASS, title, owner, wnd_proc, state, 460, 210);
+    if state.accepted {
+        Some(state.value.clone())
+    } else {
+        None
+    }
+}
+
+fn st(hwnd: HWND) -> &'static mut InputState {
+    unsafe { ui::state_ref::<InputState>(hwnd) }
+}
+
+unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    match msg {
+        WM_CREATE => {
+            on_create(hwnd, lparam);
+            LRESULT(0)
+        }
+        WM_COMMAND => {
+            on_command(hwnd, (wparam.0 & 0xFFFF) as usize, ((wparam.0 >> 16) & 0xFFFF) as u16);
+            LRESULT(0)
+        }
+        WM_CLOSE => {
+            ui::destroy_window(hwnd);
+            LRESULT(0)
+        }
+        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+    }
+}
+
+fn ctl(
+    class: &str,
+    text: &str,
+    style: u32,
+    ex: u32,
+    parent: HWND,
+    id: usize,
+    r: (i32, i32, i32, i32),
+) -> HWND {
+    let handle = ui::create_window(class, text, WS_CHILD | WS_VISIBLE | style, ex, parent, id, 0, 0, 10, 10);
+    ui::move_to(
+        handle,
+        ui::scale(r.0),
+        ui::scale(r.1),
+        ui::scale(r.2),
+        ui::scale(r.3),
+    );
+    handle
+}
+
+fn on_create(hwnd: HWND, lparam: LPARAM) {
+    let ptr = unsafe { ui::create_param(lparam) } as *mut InputState;
+    ui::set_user_data(hwnd, ptr as *mut std::ffi::c_void);
+    let s = st(hwnd);
+
+    // 提示文案由调用方通过窗口标题之外的方式给出,这里直接用标题即可;
+    // 为了信息完整再放一行说明。
+    let prompt = s.prompt.clone();
+    ctl("STATIC", &prompt, SS_LEFT, 0, hwnd, ID_PROMPT, (20, 16, 420, 24));
+
+    let initial = s.value.clone();
+    s.edit = ctl(
+        "EDIT",
+        &initial,
+        WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL,
+        WS_EX_CLIENTEDGE,
+        hwnd,
+        ID_EDIT,
+        (20, 46, 420, 32),
+    );
+    ctl("BUTTON", "确定", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, hwnd, ID_OK, (220, 96, 100, 36));
+    ctl("BUTTON", "取消", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CANCEL, (330, 96, 110, 36));
+
+    let font = app::state().font;
+    ui::apply_font_to(hwnd, &[ID_PROMPT, ID_EDIT, ID_OK, ID_CANCEL], font);
+
+    ui::set_focus(s.edit);
+    let edit = s.edit;
+    ui::send_msg(edit, EM_SETSEL, 0, -1);
+}
+
+fn on_command(hwnd: HWND, id: usize, code: u16) {
+    if code != BN_CLICKED {
+        return;
+    }
+
+    match id {
+        ID_OK => {
+            let value = ui::get_text(st(hwnd).edit);
+            let value = value.trim().to_string();
+            let s = st(hwnd);
+            s.value = value;
+            s.accepted = true;
+            ui::destroy_window(hwnd);
+        }
+        ID_CANCEL => ui::destroy_window(hwnd),
+        _ => {}
+    }
+}

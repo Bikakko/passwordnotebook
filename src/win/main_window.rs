@@ -72,6 +72,26 @@ pub fn run_main_inner(auto_close_ms: Option<u32>) -> i32 {
     let show_cmd = match super::window_state::load() {
         Some(placement) => {
             let _ = super::window_state::restore(hwnd, &placement);
+
+            // SetWindowPlacement 会绕过最小尺寸限制,可能把窗口还原得比允许的还小,
+            // 那样布局会被挤坏。太小就回到默认几何。
+            let (_, _, restored_w, restored_h) = ui::window_rect(hwnd);
+            let (min_w, min_h) = minimum_size(app::state().dpi);
+            if restored_w < min_w || restored_h < min_h {
+                let (w, h, x, y) = initial_geometry(app::state().dpi);
+                unsafe {
+                    let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowPos(
+                        hwnd,
+                        None,
+                        x,
+                        y,
+                        w,
+                        h,
+                        windows::Win32::UI::WindowsAndMessaging::SWP_NOZORDER,
+                    );
+                }
+            }
+
             // 上次是最小化的话不要还原成最小化,否则一打开就是收起来的。
             if placement.showCmd == SW_SHOWMINIMIZED as u32 {
                 SW_SHOW
@@ -95,6 +115,13 @@ pub fn run_main_inner(auto_close_ms: Option<u32>) -> i32 {
     dialog::run_modal(hwnd);
     drop(main_ui);
     0
+}
+
+/// 允许的最小窗口尺寸(与 WM_GETMINMAXINFO 保持一致)。
+fn minimum_size(dpi: u32) -> (i32, i32) {
+    let dpi = dpi.max(96);
+    let scale = |v: i32| (v as f32 * dpi as f32 / 96.0).round() as i32;
+    (scale(900), scale(600))
 }
 
 /// 按系统 DPI 缩放后在主屏居中。
@@ -172,16 +199,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         WM_GETMINMAXINFO => {
             // 限制最小尺寸,避免窗口被拖小到布局挤成一团。
             let info = unsafe { &mut *(lparam.0 as *mut MINMAXINFO) };
-            let dpi = if app::is_ready() {
-                app::state().dpi
-            } else {
-                96
-            }
-            .max(96);
-            let scale = |v: i32| (v as f32 * dpi as f32 / 96.0).round() as i32;
+            let dpi = if app::is_ready() { app::state().dpi } else { 96 };
+            let (min_w, min_h) = minimum_size(dpi);
             info.ptMinTrackSize = POINT {
-                x: scale(900),
-                y: scale(600),
+                x: min_w,
+                y: min_h,
             };
             LRESULT(0)
         }
@@ -200,6 +222,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             LRESULT(0)
         }
         WM_CTLCOLORSTATIC => LRESULT(main_ui::on_ctlcolor_static(hwnd, wparam.0, lparam.0)),
+        TSM_TAB_CHANGED => {
+            main_ui::on_tab_changed(hwnd);
+            LRESULT(0)
+        }
         WM_CONTEXTMENU => {
             if !main_ui::on_context_menu(hwnd) {
                 return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
