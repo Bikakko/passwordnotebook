@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{HWND, LPARAM};
 use windows::Win32::UI::Controls::NMHDR;
+use windows::Win32::UI::WindowsAndMessaging::MSG;
 
 use zeroize::Zeroizing;
 
@@ -451,10 +452,14 @@ pub fn apply_mode(hwnd: HWND) {
 
     for c in [
         s.unlock_title, s.unlock_hint, s.unlock_path_label, s.unlock_path, s.unlock_pw_label,
-        s.unlock_pw, s.unlock_show, s.unlock_btn, s.forgot_btn, s.goto_create_btn, s.unlock_error,
+        s.unlock_pw, s.unlock_show, s.unlock_btn, s.forgot_btn, s.unlock_error,
     ] {
         ui::set_visible(c, unlock);
     }
+
+    // 「创建新密码本」只在数据库文件确实不在时才有意义。文件在时点进去、把表单
+    // 填完也会被 create_vault 以「数据库已存在」挡回来,是条死路。
+    ui::set_visible(s.goto_create_btn, unlock && !crate::paths::vault_exists());
     for c in [
         s.create_title, s.create_hint, s.create_path_label, s.create_path, s.create_pw_label,
         s.create_pw, s.create_show, s.create_pw2_label, s.create_pw2, s.create_strength,
@@ -1370,6 +1375,24 @@ pub fn on_session_locked(hwnd: HWND) {
     if app::state().mode == Mode::Unlocked {
         lock_vault(hwnd);
     }
+}
+
+/// 消息循环的按键拦截:回车在这里处理。
+///
+/// 主窗口是自定义窗口类,不归对话框管理器管 —— `IsDialogMessageW` 拿不到默认
+/// 按钮,`BS_DEFPUSHBUTTON` 那套「回车确认」对它就失效了,回车会直接落到获得
+/// 焦点的控件上(密码框对回车无反应)。所以在派发前接住,按形态执行确认动作。
+pub fn intercept_key(msg: &MSG) -> bool {
+    if msg.message != WM_KEYDOWN || msg.wParam.0 as u32 != VK_RETURN {
+        return false;
+    }
+    let hwnd = app::state().main;
+    match app::state().mode {
+        Mode::Unlock => unlock_with_password(hwnd),
+        Mode::Create => create_vault(hwnd),
+        _ => return false,
+    }
+    true
 }
 
 // ---------- 解锁 / 创建 / 锁定 ----------

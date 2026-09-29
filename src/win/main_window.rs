@@ -112,7 +112,7 @@ pub fn run_main_inner(auto_close_ms: Option<u32>) -> i32 {
         main_ui::try_auto_unlock(hwnd);
     }
 
-    dialog::run_modal(hwnd);
+    dialog::run_modal_with(hwnd, main_ui::intercept_key);
     drop(main_ui);
     0
 }

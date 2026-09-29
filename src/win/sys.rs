@@ -92,6 +92,8 @@ pub const LVM_HITTEST: u32 = LVM_FIRST + 18;
 pub const WM_TIMER: u32 = 0x0113;
 pub const WM_NOTIFY: u32 = 0x004E;
 pub const WM_KEYDOWN: u32 = 0x0100;
+/// 回车键(WM_KEYDOWN 的 wParam)。
+pub const VK_RETURN: u32 = 0x0D;
 pub const WM_INITDIALOG: u32 = 0x0110;
 pub const WM_DPICHANGED: u32 = 0x02E0;
 pub const WM_APP: u32 = 0x8000;

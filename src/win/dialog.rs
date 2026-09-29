@@ -25,11 +25,22 @@ pub fn is_modal_open() -> bool {
 
 /// 运行对话框自己的消息循环,直到该窗口被销毁。
 pub fn run_modal(hwnd: HWND) {
+    run_modal_with(hwnd, |_| false);
+}
+
+/// 同上,但每条消息先交给 `intercept` 看一眼;它返回 true 表示已处理、不再派发。
+///
+/// 主窗口用它接住回车:这些自定义窗口类不归对话框管理器管,`IsDialogMessageW`
+/// 的「回车触发默认按钮」对它们不生效(详见 `main_ui::intercept_key`)。
+pub fn run_modal_with(hwnd: HWND, mut intercept: impl FnMut(&MSG) -> bool) {
     let mut msg = MSG::default();
     while unsafe { IsWindow(Some(hwnd)).as_bool() } {
         let result = unsafe { GetMessageW(&mut msg, None, 0, 0) };
         if result.0 <= 0 {
             break;
+        }
+        if intercept(&msg) {
+            continue;
         }
         unsafe {
             // IsDialogMessageW 负责 Tab 切换焦点、回车触发默认按钮。
