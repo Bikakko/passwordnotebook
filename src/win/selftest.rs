@@ -315,6 +315,28 @@ fn core_checks() -> usize {
     super::dpapi::clear();
     check!("清除后缓存不存在", !super::dpapi::exists());
 
+    // 回归:历史上长度恰为 25..=28 字节的残缺缓存会越过长度校验、越界 panic。
+    // 构造「头匹配但长度字段缺失」的文件,必须优雅拒绝。
+    if let Some(p) = super::dpapi::cache_path() {
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let mut truncated_rejected = true;
+        for len in 25usize..=28 {
+            let mut buf = Vec::new();
+            buf.extend_from_slice(b"PNBQ");
+            buf.extend_from_slice(&vault_id);
+            buf.extend_from_slice(&3u32.to_le_bytes());
+            buf.resize(len, 0);
+            let _ = std::fs::write(&p, &buf);
+            if super::dpapi::load(vault_id, 3).is_some() {
+                truncated_rejected = false;
+            }
+        }
+        check!("残缺缓存(25..=28B)被拒绝而非 panic", truncated_rejected);
+        super::dpapi::clear();
+    }
+
     // 剪贴板
     if super::clipboard::set_text("pnb-clipboard-probe") {
         check!(

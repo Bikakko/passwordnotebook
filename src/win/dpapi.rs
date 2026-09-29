@@ -19,7 +19,8 @@
 //!   大致等于「Windows 账户本身」,而不是强加密。要更严就勾选
 //!   「免密解锁时要求 Windows Hello 验证」,或关闭免密解锁。
 
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::LocalFree;
@@ -46,6 +47,27 @@ pub fn exists() -> bool {
     cache_path().is_some_and(|p| p.exists())
 }
 
+/// 原子写入:先写同目录临时文件,刷盘后再改名顶替。
+///
+/// 直接用 `fs::write` 是"先截断再写",中途崩溃会留下残缺文件;
+/// 这里复用保险库那套改名逻辑,避免出现半截缓存。
+fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension("dat.tmp");
+
+    let result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        crate::vaultfile::replace_file(&tmp, path)
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
 /// 写入缓存(失败时静默忽略,不影响正常使用)。
 pub fn store(vault_id: [u8; 16], key_generation: u32, dek: &[u8], require_hello: bool) {
     let Some(path) = cache_path() else { return };
@@ -63,7 +85,7 @@ pub fn store(vault_id: [u8; 16], key_generation: u32, dek: &[u8], require_hello:
     out.extend_from_slice(&(protected.len() as u32).to_le_bytes());
     out.extend_from_slice(&protected);
 
-    let _ = std::fs::write(path, out);
+    let _ = write_atomic(&path, &out);
 }
 
 /// 读取缓存;vault_id / key_generation 不匹配或解密失败时返回 None。
@@ -71,7 +93,9 @@ pub fn load(vault_id: [u8; 16], key_generation: u32) -> Option<(Zeroizing<Vec<u8
     let path = cache_path()?;
     let bytes = std::fs::read(path).ok()?;
 
-    if bytes.len() < 25 || bytes[0..4] != MAGIC {
+    // 至少要能覆盖到 29 字节(前 25 字节的头 + 4 字节载荷长度)才谈得上解析;
+    // 少一个字节,下面读长度字段就会越界。
+    if bytes.len() < 29 || bytes[0..4] != MAGIC {
         return None;
     }
     if bytes[4..20] != vault_id {
@@ -110,7 +134,7 @@ pub fn invalidate_on_lock() {
 
     let mut marked = bytes;
     marked[24] |= FLAG_LOCKED;
-    let _ = std::fs::write(&path, marked);
+    let _ = write_atomic(&path, &marked);
 }
 
 pub fn clear() {

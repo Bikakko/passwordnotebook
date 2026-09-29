@@ -102,7 +102,7 @@ impl VaultFile {
 /// Windows 上没有可用的「目录 fsync」,改用 `MOVEFILE_WRITE_THROUGH`
 /// 让改名本身尽快落盘;POSIX 则是改名之后再 sync 一次父目录。
 #[cfg(windows)]
-fn replace_file(tmp: &Path, path: &Path) -> std::io::Result<()> {
+pub(crate) fn replace_file(tmp: &Path, path: &Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
     use windows::Win32::Storage::FileSystem::{
@@ -131,7 +131,7 @@ fn replace_file(tmp: &Path, path: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(not(windows))]
-fn replace_file(tmp: &Path, path: &Path) -> std::io::Result<()> {
+pub(crate) fn replace_file(tmp: &Path, path: &Path) -> std::io::Result<()> {
     std::fs::rename(tmp, path)?;
 
     // POSIX:目录项本身也要落盘,否则断电后可能退回旧目录项。
