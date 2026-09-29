@@ -81,6 +81,8 @@ const ID_BIN_BACK_BTN: usize = 2307;
 const TIMER_CLIPBOARD: usize = 2;
 const TIMER_IDLE: usize = 3;
 const TIMER_HELLO: usize = 4;
+/// 一次性短定时器:等后台的 Hello 可用性检测出结果,刷新按钮后即停。
+const TIMER_HELLO_PROBE: usize = 5;
 const TIMER_IDLE_PERIOD: u32 = 5000;
 
 const ALL_CATEGORIES: &str = "全部";
@@ -423,9 +425,13 @@ pub fn on_create(hwnd: HWND, lparam: LPARAM) {
     // 统一套用界面字体(标题用半粗体)。
     apply_fonts(hwnd);
 
-    s.hello_available = hello::is_available();
+    // 可用性检测要问系统、可能要几百毫秒:放后台跑,先让窗口正常起来;
+    // 结果就绪后由 TIMER_HELLO_PROBE 刷新 Hello 按钮的可见性。
+    hello::probe_availability();
+    s.hello_available = hello::availability().unwrap_or(false);
 
     ui::set_timer(hwnd, TIMER_IDLE, TIMER_IDLE_PERIOD);
+    ui::set_timer(hwnd, TIMER_HELLO_PROBE, 200);
 
     refresh_filters(hwnd);
     refresh_list(hwnd);
@@ -1297,6 +1303,27 @@ pub fn on_timer(hwnd: HWND, id: usize) {
                 if idle::idle_seconds() >= timeout {
                     lock_vault(hwnd);
                 }
+            }
+        }
+        TIMER_HELLO_PROBE => {
+            // 后台可用性检测出结果了就刷新一次,然后停掉这个短命定时器。
+            let Some(available) = hello::availability() else {
+                return;
+            };
+            // 有模态对话框开着就先不动主窗口(apply_mode 会重排布局、还可能抢焦
+            // 点),等它关掉再刷新 —— 反正定时器还在跳。
+            if dialog::is_modal_open() {
+                return;
+            }
+            ui::kill_timer(hwnd, TIMER_HELLO_PROBE);
+            let changed = {
+                let s = st(hwnd);
+                let changed = s.hello_available != available;
+                s.hello_available = available;
+                changed
+            };
+            if changed {
+                apply_mode(hwnd);
             }
         }
         _ => {}

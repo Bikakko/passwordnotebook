@@ -156,7 +156,8 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
         ID_HELLO,
         (40, 108, 500, 24),
     );
-    let available = hello::is_available();
+    // 启动时已在后台测过;到这儿一般已有结果,没有就暂按「不可用」显示。
+    let available = hello::availability().unwrap_or(false);
     label(
         hwnd,
         if available {
