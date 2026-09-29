@@ -5,6 +5,7 @@
 //! [文件头 105B][主密码槽 48B][恢复码槽 48B][载荷长度 4B LE][载荷 ...]
 //! ```
 
+use std::io::Write;
 use std::path::Path;
 
 use crate::crypto::{self, WRAPPED_KEY_LEN};
@@ -63,7 +64,11 @@ impl VaultFile {
         })
     }
 
-    /// 原子写入:先写临时文件,再重命名覆盖,避免中途失败损坏原文件。
+    /// 原子写入:先写临时文件,再改名覆盖,避免中途失败损坏原文件。
+    ///
+    /// 关键是**改名之前把数据真正刷到盘上**(`sync_all`)。少了这一步,
+    /// 断电后 NTFS 可能重放了改名、却没写数据 —— 此时文件还在,内容却是
+    /// 全零或残缺,AEAD 校验必然失败,老内容也已被顶掉,等于库丢了。
     pub fn write_atomic(&self, path: &Path) -> Result<(), VaultError> {
         let mut out = Vec::with_capacity(FIXED_LEN + self.payload.len());
         out.extend_from_slice(&self.header.to_prefix());
@@ -73,10 +78,70 @@ impl VaultFile {
         out.extend_from_slice(&self.payload);
 
         let tmp = path.with_extension(format!("{}.tmp", crate::paths::VAULT_EXTENSION));
-        std::fs::write(&tmp, &out)?;
-        std::fs::rename(&tmp, path)?;
+
+        let result = (|| -> std::io::Result<()> {
+            let mut file = std::fs::File::create(&tmp)?;
+            file.write_all(&out)?;
+            // 先落盘,再改名 —— 顺序不能反。
+            file.sync_all()?;
+            drop(file);
+            replace_file(&tmp, path)
+        })();
+
+        if let Err(e) = result {
+            // 失败就把临时文件清掉,别在数据目录里留垃圾。
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e.into());
+        }
         Ok(())
     }
+}
+
+/// 用改名把临时文件顶替成正式文件(两者同目录,改名是原子的)。
+///
+/// Windows 上没有可用的「目录 fsync」,改用 `MOVEFILE_WRITE_THROUGH`
+/// 让改名本身尽快落盘;POSIX 则是改名之后再 sync 一次父目录。
+#[cfg(windows)]
+fn replace_file(tmp: &Path, path: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+
+    let wide = |p: &Path| -> Vec<u16> {
+        p.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    };
+    let from = wide(tmp);
+    let to = wide(path);
+
+    match unsafe {
+        MoveFileExW(
+            PCWSTR(from.as_ptr()),
+            PCWSTR(to.as_ptr()),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    } {
+        Ok(()) => Ok(()),
+        Err(e) => Err(std::io::Error::other(e.to_string())),
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_file(tmp: &Path, path: &Path) -> std::io::Result<()> {
+    std::fs::rename(tmp, path)?;
+
+    // POSIX:目录项本身也要落盘,否则断电后可能退回旧目录项。
+    #[cfg(unix)]
+    if let Some(dir) = path.parent() {
+        if let Ok(handle) = std::fs::File::open(dir) {
+            let _ = handle.sync_all();
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -114,6 +179,30 @@ mod tests {
     fn truncated_is_rejected() {
         let bytes = vec![0u8; 10];
         assert!(VaultFile::parse(&bytes).is_err());
+    }
+
+    /// 覆盖写:目标已存在时必须能顶掉(Windows 上走 MOVEFILE_REPLACE_EXISTING),
+    /// 且不能留下临时文件。
+    #[test]
+    fn write_atomic_replaces_existing() {
+        let dir = std::env::temp_dir().join(format!("pnb-rs-replace-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("v.pkk");
+
+        let first = sample();
+        first.write_atomic(&path).unwrap();
+
+        let mut second = sample();
+        second.payload = vec![9u8; 40];
+        second.write_atomic(&path).unwrap();
+
+        let read = VaultFile::read(&path).unwrap();
+        assert_eq!(read.payload, vec![9u8; 40]);
+
+        let tmp = path.with_extension("pkk.tmp");
+        assert!(!tmp.exists(), "临时文件应已被改名,不该残留");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
