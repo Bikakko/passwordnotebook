@@ -207,6 +207,27 @@ fn recovery_code_unlocks_and_resets_password() {
     assert!(!VaultService::verify_master_password(&tv.path, PASSWORD));
 }
 
+/// 重设主密码失败时,不能把库留在「内存已解锁」状态。
+///
+/// 否则界面仍停留在锁定流程、`mode != Unlocked`,空闲锁定与锁屏事件都会跳过
+/// `vault.lock()`,明文 DEK 便一直留存到进程退出。
+#[test]
+fn failed_password_reset_leaves_vault_locked() {
+    let tv = TempVault::new("resetfail");
+    let code = tv.create(PASSWORD);
+
+    let mut vault = VaultService::new();
+    vault.open_with_recovery_code(&tv.path, &code).unwrap();
+    assert!(vault.is_unlocked());
+
+    // 把整个目录删掉,让随后写盘必定失败。
+    std::fs::remove_dir_all(&tv.dir).unwrap();
+
+    let err = vault.reset_master_password(NEW_PASSWORD).unwrap_err();
+    assert!(matches!(err, VaultError::Io(_)), "got {err:?}");
+    assert!(!vault.is_unlocked(), "重设失败后不应留在解锁状态");
+}
+
 #[test]
 fn recovery_code_accepts_loose_input() {
     let tv = TempVault::new("loose");

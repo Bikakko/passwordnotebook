@@ -297,7 +297,20 @@ impl VaultService {
     }
 
     /// 恢复码流程专用:在已知数据密钥的前提下重设主密码,不校验旧密码。
+    ///
+    /// **失败即锁定**:本方法会先改动内存中的文件头,一旦中途出错就把库锁回去,
+    /// 避免留下「内存已解锁(DEK 仍在)、界面却仍认为锁定」的状态 —— 那种状态下
+    /// 空闲锁定与锁屏事件都会因 `mode != Unlocked` 而跳过 `vault.lock()`,
+    /// 明文 DEK 会一直留到进程退出。
     pub fn reset_master_password(&mut self, new: &str) -> Result<()> {
+        let result = self.reset_master_password_inner(new);
+        if result.is_err() {
+            self.lock();
+        }
+        result
+    }
+
+    fn reset_master_password_inner(&mut self, new: &str) -> Result<()> {
         let path = self.path.clone().ok_or(VaultError::Locked)?;
         let dek = Zeroizing::new(self.dek.as_ref().ok_or(VaultError::Locked)?.to_vec());
         let file = self.file.as_mut().ok_or(VaultError::Locked)?;
