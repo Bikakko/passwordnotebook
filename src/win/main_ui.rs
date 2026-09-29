@@ -1009,11 +1009,14 @@ pub fn on_command(hwnd: HWND, id: usize, code: u16) {
 
 pub fn on_notify(hwnd: HWND, lparam: LPARAM) {
     let header = unsafe { &*(lparam.0 as *const NMHDR) };
-    let s = st(hwnd);
-    if header.hwndFrom == s.list && header.code as i32 == NM_DBLCLK {
+    // 只处理主列表的双击。
+    //
+    // 回车不在这里处理:ListView 获得焦点时按回车本该上报 NM_RETURN,但主窗口的
+    // 消息循环走 IsDialogMessageW,它会先把回车处理掉(当成点默认按钮),NM_RETURN
+    // 到不了这里。要支持回车打开条目,得在消息循环里先于 IsDialogMessageW 拦截。
+    let code = header.code as i32;
+    if st(hwnd).list == header.hwndFrom && code == NM_DBLCLK {
         edit_selected(hwnd);
-    } else if false {
-        refresh_list(hwnd);
     }
 }
 
