@@ -1,0 +1,56 @@
+[package]
+name = "password-notebook"
+version = "0.0.0"
+edition = "2024"
+description = "本地密码本 —— 原生 Win32 界面"
+
+[lib]
+name = "password_notebook"
+path = "src/lib.rs"
+
+[[bin]]
+name = "PasswordNotebook"
+path = "src/main.rs"
+
+[dependencies]
+aes-gcm = "0.11.1"
+argon2 = "0.6.0"
+getrandom = "0.4.3"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+zeroize = "1.9.0"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_Security_Cryptography",
+    "Win32_System_Com",
+    "Win32_System_WinRT",
+    "Win32_System_Console",
+    "Win32_System_DataExchange",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Registry",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_System_Time",
+    "Win32_Storage_FileSystem",
+    "Win32_UI_Controls",
+    "Win32_UI_Controls_Dialogs",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Security_Credentials_UI",
+] }
+windows-future = "0.3.2"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

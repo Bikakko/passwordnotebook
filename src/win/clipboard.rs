@@ -1,0 +1,86 @@
+//! 剪贴板读写(纯 Win32,不使用 OLE)。
+
+use windows::Win32::Foundation::{HANDLE, HGLOBAL, HWND};
+use windows::Win32::System::DataExchange::{
+    CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
+};
+use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+
+const CF_UNICODETEXT: u32 = 13;
+
+pub fn set_text(text: &str) -> bool {
+    let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    let bytes = wide.len() * 2;
+
+    unsafe {
+        if OpenClipboard(Some(HWND::default())).is_err() {
+            return false;
+        }
+
+        let result = (|| -> bool {
+            if EmptyClipboard().is_err() {
+                return false;
+            }
+
+            let handle = match GlobalAlloc(GMEM_MOVEABLE, bytes) {
+                Ok(h) => h,
+                Err(_) => return false,
+            };
+
+            let memory = HGLOBAL(handle.0);
+            let ptr = GlobalLock(memory);
+            if ptr.is_null() {
+                return false;
+            }
+            std::ptr::copy_nonoverlapping(wide.as_ptr() as *const u8, ptr as *mut u8, bytes);
+            let _ = GlobalUnlock(memory);
+
+            SetClipboardData(CF_UNICODETEXT, Some(HANDLE(handle.0))).is_ok()
+        })();
+
+        let _ = CloseClipboard();
+        result
+    }
+}
+
+/// 清空剪贴板。
+pub fn clear() {
+    unsafe {
+        if OpenClipboard(Some(HWND::default())).is_err() {
+            return;
+        }
+        let _ = EmptyClipboard();
+        let _ = CloseClipboard();
+    }
+}
+
+pub fn get_text() -> Option<String> {
+    unsafe {
+        if OpenClipboard(Some(HWND::default())).is_err() {
+            return None;
+        }
+
+        let result = (|| -> Option<String> {
+            let handle = GetClipboardData(CF_UNICODETEXT).ok()?;
+            let memory = HGLOBAL(handle.0);
+            let ptr = GlobalLock(memory) as *const u16;
+            if ptr.is_null() {
+                return None;
+            }
+
+            let mut len = 0usize;
+            while *ptr.add(len) != 0 {
+                len += 1;
+                if len > 1_000_000 {
+                    break;
+                }
+            }
+            let text = String::from_utf16_lossy(std::slice::from_raw_parts(ptr, len));
+            let _ = GlobalUnlock(memory);
+            Some(text)
+        })();
+
+        let _ = CloseClipboard();
+        result
+    }
+}

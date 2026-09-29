@@ -1,0 +1,77 @@
+//! 全局应用状态。
+//!
+//! 所有访问都发生在 UI 线程上,因此这里用一个 `UnsafeCell` 包住的全局单例,
+//! 换取「随时可取 &mut 状态」的便利(避免 RefCell 在重入时 panic)。
+
+use std::cell::UnsafeCell;
+
+use windows::Win32::Foundation::HWND;
+use windows::Win32::Graphics::Gdi::HFONT;
+
+use crate::model::Settings;
+use crate::vault::VaultService;
+
+/// 本机免密解锁所需的材料(DEK 已由 DPAPI 解出)。
+pub struct CachedKey {
+    pub vault_id: [u8; 16],
+    pub key_generation: u32,
+    pub dek: Vec<u8>,
+    pub require_hello: bool,
+}
+
+pub struct AppState {
+    pub settings: Settings,
+    pub vault: VaultService,
+    pub font: HFONT,
+    pub font_bold: HFONT,
+    pub dpi: u32,
+    pub main: HWND,
+    pub cached: Option<CachedKey>,
+    /// 主窗口当前处于哪种形态。
+    pub mode: Mode,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mode {
+    /// 解锁已有密码本。
+    Unlock,
+    /// 创建新密码本。
+    Create,
+    /// 已解锁,显示条目列表。
+    Unlocked,
+    /// 回收站。
+    Bin,
+}
+
+struct Global(UnsafeCell<Option<AppState>>);
+
+// 安全说明:本程序是单线程 GUI,所有访问都在同一个 UI 线程内完成。
+unsafe impl Sync for Global {}
+
+static GLOBAL: Global = Global(UnsafeCell::new(None));
+
+pub fn set(state: AppState) {
+    unsafe {
+        *GLOBAL.0.get() = Some(state);
+    }
+}
+
+pub fn is_ready() -> bool {
+    unsafe { (*GLOBAL.0.get()).is_some() }
+}
+
+/// 取得全局状态的可变引用(仅允许在 UI 线程调用)。
+#[allow(clippy::mut_from_ref)]
+pub fn state() -> &'static mut AppState {
+    unsafe {
+        (*GLOBAL.0.get())
+            .as_mut()
+            .expect("应用状态尚未初始化")
+    }
+}
+
+pub fn clear() {
+    unsafe {
+        *GLOBAL.0.get() = None;
+    }
+}

@@ -1,0 +1,4 @@
+# 从 WSL 交叉编译到 Windows:使用 mingw-w64 作为链接器。
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+ar = "x86_64-w64-mingw32-ar"
