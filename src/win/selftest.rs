@@ -447,6 +447,20 @@ fn core_checks() -> usize {
         );
     }
 
+    // 回归:窗口状态来自注册表,showCmd 未校验时野值会让窗口启动即隐藏。
+    check!(
+        "showCmd 校验:0(SW_HIDE)等野值被拒",
+        !super::window_state::show_cmd_is_valid(0)
+            && !super::window_state::show_cmd_is_valid(6)
+            && !super::window_state::show_cmd_is_valid(u32::MAX)
+    );
+    check!(
+        "showCmd 校验:三种合法值被接受",
+        super::window_state::show_cmd_is_valid(super::sys::SW_SHOWNORMAL as u32)
+            && super::window_state::show_cmd_is_valid(super::sys::SW_SHOWMINIMIZED as u32)
+            && super::window_state::show_cmd_is_valid(super::sys::SW_SHOWMAXIMIZED as u32)
+    );
+
     check!("系统空闲时间可读取", super::idle::idle_seconds() < 86_400);
 
     let _ = std::fs::remove_dir_all(&dir);

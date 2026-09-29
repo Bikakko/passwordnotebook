@@ -19,6 +19,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowPlacement, SetWindowPlacement, WINDOWPLACEMENT,
 };
 
+use super::sys::{SW_SHOWMAXIMIZED, SW_SHOWMINIMIZED, SW_SHOWNORMAL};
 use super::ui::Wz;
 
 const SUBKEY: &str = "Software\\PasswordNotebook";
@@ -72,8 +73,24 @@ pub fn load() -> Option<WINDOWPLACEMENT> {
         if read.0 != 0 || placement.length as usize != placement_size() {
             return None;
         }
+
+        // showCmd 也得是认识的取值。这份状态存在 HKCU,可能被外部改坏、或在写入
+        // 中断时残缺;而 showCmd 一旦是 0(SW_HIDE)或别的野值,restore/ShowWindow
+        // 会让窗口一启动就是隐藏的 —— 用户以为程序根本没打开,又因为没有可见窗口
+        // 而找不到任务栏按钮。不认它,退回默认几何 + 正常显示。
+        if !show_cmd_is_valid(placement.showCmd) {
+            return None;
+        }
         Some(placement)
     }
+}
+
+/// `GetWindowPlacement` 只会产出这三种 `showCmd`;其余一律视为损坏。
+pub(crate) fn show_cmd_is_valid(show_cmd: u32) -> bool {
+    matches!(
+        show_cmd as i32,
+        SW_SHOWNORMAL | SW_SHOWMINIMIZED | SW_SHOWMAXIMIZED
+    )
 }
 
 /// 保存当前窗口状态。
