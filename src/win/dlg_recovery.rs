@@ -20,16 +20,32 @@ const C_CODE: usize = 2;
 const C_COPY: usize = 3;
 const C_SAVE: usize = 4;
 const C_OK: usize = 5;
+const C_CONFIRM: usize = 6;
+const C_WARN: usize = 7;
 
 struct CodeState {
     code: String,
+    confirm: HWND,
+    ok: HWND,
+    warn: HWND,
 }
 
 pub fn show_code(owner: HWND, code: &str, initial: bool) {
     let state = Box::new(CodeState {
         code: code.to_string(),
+        confirm: HWND::default(),
+        ok: HWND::default(),
+        warn: HWND::default(),
     });
-    dialog::open(CLASS_CODE, if initial { "请保存恢复码" } else { "新的恢复码" }, owner, code_proc, state, 560, 400);
+    dialog::open(
+        CLASS_CODE,
+        if initial { "请保存恢复码" } else { "新的恢复码" },
+        owner,
+        code_proc,
+        state,
+        560,
+        420,
+    );
 }
 
 unsafe extern "system" fn code_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -37,7 +53,7 @@ unsafe extern "system" fn code_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
         WM_CREATE => {
             let ptr = unsafe { ui::create_param(lparam) } as *mut CodeState;
             ui::set_user_data(hwnd, ptr as *mut std::ffi::c_void);
-            let s = unsafe { &*ptr };
+            let s = st_code(hwnd);
 
             ctl(
                 "STATIC",
@@ -48,18 +64,18 @@ unsafe extern "system" fn code_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                 C_HINT,
                 (20, 16, 504, 96),
             );
+            // 用多行显示:恢复码有 39 个字符,单行会被截断,用户照着抄就抄不全。
             let code_edit = ctl(
                 "EDIT",
                 &s.code,
-                WS_BORDER | WS_TABSTOP | ES_READONLY | ES_AUTOHSCROLL,
+                WS_BORDER | WS_TABSTOP | ES_MULTILINE | ES_READONLY,
                 WS_EX_CLIENTEDGE,
                 hwnd,
                 C_CODE,
-                (20, 122, 504, 42),
+                (20, 122, 504, 60),
             );
-            ctl("BUTTON", "复制恢复码", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, C_COPY, (20, 180, 150, 36));
-            ctl("BUTTON", "另存为文本…", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, C_SAVE, (182, 180, 160, 36));
-            let ok = ctl("BUTTON", "我已妥善保存", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, hwnd, C_OK, (20, 288, 190, 38));
+            ctl("BUTTON", "复制恢复码", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, C_COPY, (20, 192, 150, 36));
+            ctl("BUTTON", "另存为文本…", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, C_SAVE, (182, 192, 160, 36));
             ctl(
                 "STATIC",
                 "提示:恢复码不区分大小写,可省略连字符。",
@@ -67,38 +83,101 @@ unsafe extern "system" fn code_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                 0,
                 hwnd,
                 C_HINT + 100,
-                (20, 238, 504, 26),
+                (20, 232, 504, 26),
             );
+            // 必须显式确认已抄写,否则「完成」按钮不可用 ——
+            // 避免用户在没抄下来的情况下一路点完,之后忘记登录密码就真进不去了。
+            s.confirm = ctl(
+                "BUTTON",
+                "我已抄写并妥善保管恢复码",
+                WS_TABSTOP | BS_AUTOCHECKBOX,
+                0,
+                hwnd,
+                C_CONFIRM,
+                (20, 266, 460, 30),
+            );
+            s.warn = ctl("STATIC", "", SS_LEFT, 0, hwnd, C_WARN, (20, 300, 504, 26));
+            s.ok = ctl(
+                "BUTTON",
+                "完成",
+                WS_TABSTOP | BS_DEFPUSHBUTTON,
+                0,
+                hwnd,
+                C_OK,
+                (20, 332, 210, 38),
+            );
+            ui::enable(s.ok, false);
 
             let font = app::state().font;
             ui::apply_font_to(
                 hwnd,
-                &[C_HINT, C_CODE, C_COPY, C_SAVE, C_OK, C_HINT + 100],
+                &[C_HINT, C_CODE, C_COPY, C_SAVE, C_OK, C_HINT + 100, C_CONFIRM, C_WARN],
                 font,
             );
-            ui::set_focus(ok);
+            ui::set_focus(s.confirm);
             let _ = code_edit;
             LRESULT(0)
         }
         WM_COMMAND => {
+            // 注意:id 相同的不同控件会发不同通知码,必须一起判断。
+            // (只读输入框的 id 恰好也是 2,它发的 EN_CHANGE 曾被误当成 IDCANCEL。)
             let id = (wparam.0 & 0xFFFF) as usize;
-            let s = unsafe { &*ui::user_data::<CodeState>(hwnd) };
-            match id {
-                C_COPY => {
+            let code = ((wparam.0 >> 16) & 0xFFFF) as u16;
+            let s = st_code(hwnd);
+            match (id, code) {
+                (C_COPY, BN_CLICKED) => {
                     clipboard::set_text(&s.code);
                 }
-                C_SAVE => save_code(hwnd, &s.code),
-                C_OK => ui::destroy_window(hwnd),
+                (C_SAVE, BN_CLICKED) => save_code(hwnd, &s.code),
+                (C_CONFIRM, BN_CLICKED) => {
+                    let confirmed = is_confirmed(s);
+                    ui::enable(s.ok, confirmed);
+                    if confirmed {
+                        ui::set_text(s.warn, "");
+                    }
+                }
+                (C_OK, BN_CLICKED) => {
+                    let s = st_code(hwnd);
+                    if !is_confirmed(s) {
+                        ui::set_text(s.warn, "请先勾选上面的确认项,再点「完成」。");
+                        return LRESULT(0);
+                    }
+                    ui::destroy_window(hwnd);
+                }
+                (IDCANCEL, BN_CLICKED) => close_with_warning(hwnd),
                 _ => {}
             }
             LRESULT(0)
         }
         WM_CLOSE => {
-            ui::destroy_window(hwnd);
+            close_with_warning(hwnd);
             LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
+}
+
+fn st_code(hwnd: HWND) -> &'static mut CodeState {
+    unsafe { ui::state_ref::<CodeState>(hwnd) }
+}
+
+fn is_confirmed(s: &CodeState) -> bool {
+    ui::send_msg(s.confirm, BM_GETCHECK, 0, 0) == BST_CHECKED
+}
+
+/// 直接关闭(点 X 或按 ESC)时的兜底提醒:恢复码没抄下来就关,风险很大。
+fn close_with_warning(hwnd: HWND) {
+    let s = st_code(hwnd);
+    if !is_confirmed(s)
+        && !ui::confirm(
+            hwnd,
+            "恢复码还没有确认保存。\n\n关闭后如果忘记登录密码,数据将无法恢复。确定要关闭吗?",
+            "恢复码未保存",
+        )
+    {
+        return;
+    }
+    ui::destroy_window(hwnd);
 }
 
 fn save_code(hwnd: HWND, code: &str) {

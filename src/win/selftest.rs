@@ -72,7 +72,92 @@ pub fn run() -> i32 {
     failures += tabs_probe();
 
     println!("-- 窗口生命周期 --");
-    let code = super::main_window::run_main_inner(Some(400));
+
+    // 回归:Windows Hello 按钮只应在解锁界面出现。
+    // 做法是在另一个线程里用控件 id 去问窗口(只读查询,跨线程安全),
+    // 模式切换通过向主窗口投递「点击新建密码本」完成 —— 走真实代码路径。
+    let observed = std::sync::Arc::new((
+        std::sync::atomic::AtomicI32::new(-1),
+        std::sync::atomic::AtomicI32::new(-1),
+    ));
+    let watcher = {
+        let observed = std::sync::Arc::clone(&observed);
+        std::thread::spawn(move || {
+            use std::sync::atomic::Ordering;
+            use windows::core::PCWSTR;
+            use windows::Win32::Foundation::{LPARAM, WPARAM};
+            use windows::Win32::UI::WindowsAndMessaging::{
+                FindWindowW, GetDlgItem, IsWindowVisible, PostMessageW, ShowWindow, SW_SHOW,
+                WM_COMMAND,
+            };
+
+            for _ in 0..40 {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                let class = super::ui::Wz::new(super::main_window::CLASS_NAME);
+                let Ok(main) = (unsafe { FindWindowW(class.pcwstr(), PCWSTR::null()) }) else {
+                    continue;
+                };
+                let Ok(hello) =
+                    (unsafe { GetDlgItem(Some(main), super::main_ui::ID_HELLO_BTN as i32) })
+                else {
+                    continue;
+                };
+                if main.is_invalid() || hello.is_invalid() {
+                    continue;
+                }
+
+                // 强制设为可见:模拟「解锁界面里这个按钮本来就显示着」
+                // (真实机器上有免密缓存时就是这样)。修复若被撤掉,
+                // 切换形态后它不会消失,本断言就会失败。
+                unsafe {
+                    let _ = ShowWindow(hello, SW_SHOW);
+                }
+                let in_unlock = unsafe { IsWindowVisible(hello) }.as_bool();
+                // 等价于点「新建密码本」。用 PostMessage(异步)避免阻塞观测线程。
+                unsafe {
+                    let _ = PostMessageW(
+                        Some(main),
+                        WM_COMMAND,
+                        WPARAM(super::main_ui::ID_GOTO_CREATE_BTN),
+                        LPARAM(0),
+                    );
+                }
+                std::thread::sleep(std::time::Duration::from_millis(80));
+                let in_create = unsafe { IsWindowVisible(hello) }.as_bool();
+
+                observed.0.store(i32::from(in_unlock), Ordering::SeqCst);
+                observed.1.store(i32::from(in_create), Ordering::SeqCst);
+                return;
+            }
+        })
+    };
+
+    let code = super::main_window::run_main_inner(Some(900));
+    let _ = watcher.join();
+
+    {
+        use std::sync::atomic::Ordering;
+        let in_unlock = observed.0.load(Ordering::SeqCst);
+        let in_create = observed.1.load(Ordering::SeqCst);
+        if in_unlock < 0 || in_create < 0 {
+            println!("  SKIP  未观测到主窗口(当前不是解锁形态?)");
+        } else {
+            let shown = |v: i32| if v == 1 { "显示" } else { "隐藏" };
+            println!(
+                "  Hello 按钮:解锁界面={} → 创建界面={}",
+                shown(in_unlock),
+                shown(in_create)
+            );
+            if in_create == 1 {
+                println!("  FAIL  切到别的形态后 Hello 按钮仍然可见");
+                failures += 1;
+            } else if in_unlock == 1 {
+                println!("  PASS  切换形态后 Hello 按钮已隐藏");
+            } else {
+                println!("  PASS  Hello 按钮两种形态下都不可见(本次未走到显示路径)");
+            }
+        }
+    }
     if code == 0 {
         println!("  PASS  创建窗口 → 自动关闭 → 消息循环正常退出");
     } else {
@@ -385,5 +470,52 @@ pub fn preview() -> i32 {
         let _ = DestroyWindow(host);
     }
     println!("预览结束");
+    0
+}
+
+
+pub fn preview_recovery_requested() -> bool {
+    std::env::args().any(|a| a == "--ui-preview-recovery")
+}
+
+/// 只显示「恢复码」对话框,用来肉眼检查布局(不需要打开数据库)。
+pub fn preview_recovery() -> i32 {
+    use super::app;
+    use super::sys::*;
+    use super::ui;
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::DefWindowProcW;
+
+    unsafe extern "system" fn host_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+    }
+
+    // 对话框会读全局状态里的字体和 DPI。这里必须用真实 DPI ——
+    // 用 96 会导致控件按 100% 摆放、而对话框按实际缩放开尺寸,预览就假了。
+    let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForSystem() }.max(96);
+    app::set(app::AppState {
+        settings: Default::default(),
+        vault: crate::vault::VaultService::new(),
+        font: Default::default(),
+        font_bold: Default::default(),
+        dpi,
+        main: HWND::default(),
+        cached: None,
+        mode: app::Mode::Create,
+    });
+
+    app::state().font = ui::create_ui_font(false, dpi);
+
+    let _ = ui::register_class("PnbPreviewHost", host_proc);
+    let host = ui::create_window("PnbPreviewHost", "", WS_OVERLAPPED, 0, HWND::default(), 0, 0, 0, 200, 200);
+
+    super::dlg_recovery::show_code(host, "ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567", true);
+
+    ui::destroy_window(host);
     0
 }

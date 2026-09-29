@@ -31,9 +31,9 @@ const ID_UNLOCK_PW_LABEL: usize = 2006;
 const ID_UNLOCK_PW: usize = 2007;
 const ID_UNLOCK_SHOW: usize = 2008;
 const ID_UNLOCK_BTN: usize = 2009;
-const ID_HELLO_BTN: usize = 2010;
+pub const ID_HELLO_BTN: usize = 2010;
 const ID_FORGOT_BTN: usize = 2011;
-const ID_GOTO_CREATE_BTN: usize = 2012;
+pub const ID_GOTO_CREATE_BTN: usize = 2012;
 const ID_UNLOCK_ERROR: usize = 2013;
 
 const ID_CREATE_TITLE: usize = 2101;
@@ -466,9 +466,17 @@ pub fn apply_mode(hwnd: HWND) {
         ui::set_visible(c, bin);
     }
 
+    // Windows Hello 按钮只在解锁界面出现(且要有可用的免密缓存)。
+    // 注意:必须在**所有**形态下显式设置它 —— 只写 `if unlock` 的话,
+    // 从解锁界面切走时它会保持可见,一路带到密码管理界面上。
     if unlock {
         let cached = has_quick_unlock_cache();
         ui::set_visible(s.hello_btn, s.hello_available && cached);
+    } else {
+        ui::set_visible(s.hello_btn, false);
+        // 顺带把可能还在轮询的 Hello 验证停掉,别让它跨形态继续生效。
+        ui::kill_timer(hwnd, TIMER_HELLO);
+        s.pending_hello_dek = None;
     }
 
     // 数据库位置只读显示。正常情况下只给文件名,避免界面上出现绝对路径。

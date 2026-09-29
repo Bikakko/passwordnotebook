@@ -100,6 +100,10 @@ pub const WM_WTSSESSION_CHANGE: u32 = 0x02B1;
 
 // ---------- 控件消息 ----------
 pub const BM_GETCHECK: u32 = 0x00F0;
+/// 复选框被勾选时 BM_GETCHECK 的返回值。
+pub const BST_CHECKED: isize = 1;
+/// 对话框按 ESC 时收到的命令 id。
+pub const IDCANCEL: usize = 2;
 pub const BM_SETCHECK: u32 = 0x00F1;
 pub const BM_CLICK: u32 = 0x00F5;
 
