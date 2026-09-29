@@ -1,6 +1,7 @@
 //! 模态对话框框架。
 
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -9,6 +10,18 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use super::sys::*;
 use super::ui::{self, WndProc};
+
+/// 当前打开的模态对话框层数。对话框可以嵌套(如编辑条目里再开密码生成器),
+/// 所以用计数而非布尔。
+static MODAL_DEPTH: AtomicU32 = AtomicU32::new(0);
+
+/// 是否有模态对话框正开着。
+///
+/// 空闲自动锁定据此让路:对话框开着时把库锁掉,对话框还在、随后的保存必然
+/// 失败,用户填了一半的内容就白填了。
+pub fn is_modal_open() -> bool {
+    MODAL_DEPTH.load(Ordering::Relaxed) > 0
+}
 
 /// 运行对话框自己的消息循环,直到该窗口被销毁。
 pub fn run_modal(hwnd: HWND) {
@@ -84,7 +97,10 @@ pub fn open<T>(
 
     ui::show_window(hwnd, SW_SHOW);
     ui::update_window(hwnd);
+
+    MODAL_DEPTH.fetch_add(1, Ordering::Relaxed);
     run_modal(hwnd);
+    MODAL_DEPTH.fetch_sub(1, Ordering::Relaxed);
 
     if !owner.is_invalid() {
         ui::enable(owner, true);

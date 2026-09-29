@@ -19,8 +19,8 @@ use super::sys::*;
 use super::timefmt;
 use super::ui;
 use super::{
-    clipboard, dlg_editor, dlg_generator, dlg_input, dlg_recovery, dlg_settings, dlg_taxonomy, dpapi,
-    hello, idle,
+    clipboard, dialog, dlg_editor, dlg_generator, dlg_input, dlg_recovery, dlg_settings, dlg_taxonomy,
+    dpapi, hello, idle,
 };
 
 // ---------- 控件 ID ----------
@@ -1285,7 +1285,9 @@ pub fn on_timer(hwnd: HWND, id: usize) {
             }
         }
         TIMER_IDLE => {
-            if app::state().mode != Mode::Unlocked {
+            // 模态对话框(编辑条目、设置等)开着时不锁定:库被锁而对话框仍在,
+            // 保存必然失败、用户填的内容白填。对话框关闭后定时器会再评估。
+            if app::state().mode != Mode::Unlocked || dialog::is_modal_open() {
                 return;
             }
             if let Some(timeout) = idle_timeout_seconds() {

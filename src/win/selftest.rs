@@ -393,6 +393,60 @@ fn core_checks() -> usize {
         }
     }
 
+    // 回归:模态对话框(嵌套消息循环)打开期间必须能被感知到 ——
+    // 空闲自动锁定据此让路,否则编辑到一半被锁、保存必然失败、输入白填。
+    {
+        use super::sys::*;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::DefWindowProcW;
+
+        static SAW_OPEN: AtomicBool = AtomicBool::new(false);
+
+        unsafe extern "system" fn probe_proc(
+            hwnd: HWND,
+            msg: u32,
+            wparam: WPARAM,
+            lparam: LPARAM,
+        ) -> LRESULT {
+            match msg {
+                WM_CREATE => {
+                    super::ui::set_timer(hwnd, 1, 30);
+                    LRESULT(0)
+                }
+                WM_TIMER => {
+                    // 此刻正处于 run_modal 的嵌套循环里。
+                    SAW_OPEN.store(super::dialog::is_modal_open(), Ordering::SeqCst);
+                    super::ui::destroy_window(hwnd);
+                    LRESULT(0)
+                }
+                _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+            }
+        }
+
+        check!(
+            "模态打开前 dialog::is_modal_open() 为假",
+            !super::dialog::is_modal_open()
+        );
+        let _ = super::dialog::open(
+            "PnbModalProbe",
+            "模态探针",
+            HWND::default(),
+            probe_proc,
+            Box::new(()),
+            220,
+            120,
+        );
+        check!(
+            "嵌套消息循环期间 dialog::is_modal_open() 为真",
+            SAW_OPEN.load(Ordering::SeqCst)
+        );
+        check!(
+            "模态关闭后 dialog::is_modal_open() 复位",
+            !super::dialog::is_modal_open()
+        );
+    }
+
     check!("系统空闲时间可读取", super::idle::idle_seconds() < 86_400);
 
     let _ = std::fs::remove_dir_all(&dir);
