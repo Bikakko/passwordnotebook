@@ -274,16 +274,20 @@ impl VaultService {
         let dek = Zeroizing::new(self.dek.as_ref().ok_or(VaultError::Locked)?.to_vec());
         let file = self.file.as_mut().ok_or(VaultError::Locked)?;
 
-        file.header.password_salt = crypto::random_array()?;
-        file.header.password_nonce = crypto::random_array()?;
-        file.header.key_generation = file.header.key_generation.wrapping_add(1);
+        // 先在临时头部上把新槽位算好,中途任何一步失败都不碰 self.file ——
+        // 否则内存头部会与磁盘对不上,之后一次 save() 就把半成品写出去,
+        // 主密码槽再也解不开。
+        let mut header = file.header.clone();
+        header.password_salt = crypto::random_array()?;
+        header.password_nonce = crypto::random_array()?;
+        header.key_generation = header.key_generation.wrapping_add(1);
 
-        let (m, t, p) = (file.header.m_cost_kib, file.header.t_cost, file.header.p_cost);
-        let aad = file.header.password_slot_aad();
-        file.password_wrapped = wrap_with_secret(
+        let (m, t, p) = (header.m_cost_kib, header.t_cost, header.p_cost);
+        let aad = header.password_slot_aad();
+        let wrapped = wrap_with_secret(
             new.as_bytes(),
-            &file.header.password_salt,
-            &file.header.password_nonce,
+            &header.password_salt,
+            &header.password_nonce,
             &dek,
             &aad,
             m,
@@ -291,7 +295,16 @@ impl VaultService {
             p,
         )?;
 
-        file.write_atomic(&path)?;
+        // 到这里才落到 self.file;写盘失败则整体回滚到改动前的状态。
+        let previous_header = std::mem::replace(&mut file.header, header);
+        let previous_wrapped = std::mem::replace(&mut file.password_wrapped, wrapped);
+
+        if let Err(e) = file.write_atomic(&path) {
+            file.header = previous_header;
+            file.password_wrapped = previous_wrapped;
+            return Err(e);
+        }
+
         self.unlocked_with_recovery = false;
         Ok(())
     }
@@ -347,15 +360,17 @@ impl VaultService {
         let normalized = recovery::normalize(&code)
             .ok_or_else(|| VaultError::Crypto("恢复码生成异常。".into()))?;
 
-        file.header.recovery_salt = crypto::random_array()?;
-        file.header.recovery_nonce = crypto::random_array()?;
+        // 同 change_master_password:先在临时头部上算好,失败不碰 self.file。
+        let mut header = file.header.clone();
+        header.recovery_salt = crypto::random_array()?;
+        header.recovery_nonce = crypto::random_array()?;
 
-        let (m, t, p) = (file.header.m_cost_kib, file.header.t_cost, file.header.p_cost);
-        let aad = file.header.recovery_slot_aad();
-        file.recovery_wrapped = wrap_with_secret(
+        let (m, t, p) = (header.m_cost_kib, header.t_cost, header.p_cost);
+        let aad = header.recovery_slot_aad();
+        let wrapped = wrap_with_secret(
             normalized.as_bytes(),
-            &file.header.recovery_salt,
-            &file.header.recovery_nonce,
+            &header.recovery_salt,
+            &header.recovery_nonce,
             &dek,
             &aad,
             m,
@@ -363,7 +378,15 @@ impl VaultService {
             p,
         )?;
 
-        file.write_atomic(&path)?;
+        let previous_header = std::mem::replace(&mut file.header, header);
+        let previous_wrapped = std::mem::replace(&mut file.recovery_wrapped, wrapped);
+
+        if let Err(e) = file.write_atomic(&path) {
+            file.header = previous_header;
+            file.recovery_wrapped = previous_wrapped;
+            return Err(e);
+        }
+
         Ok(code)
     }
 

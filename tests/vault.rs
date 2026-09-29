@@ -305,6 +305,58 @@ fn regenerate_recovery_code_invalidates_old_one() {
     assert!(VaultService::new().open_with_recovery_code(&tv.path, &new).is_ok());
 }
 
+/// 改主密码时若写盘失败,内存头部必须回滚 —— 否则之后一次 save() 会把
+/// 「新 salt/nonce + 旧密码槽」这种半成品持久化,主密码再也解不开。
+#[test]
+fn failed_password_change_rolls_back_header() {
+    let tv = TempVault::new("changepwfail");
+    tv.create(PASSWORD);
+
+    let mut vault = VaultService::new();
+    vault.open(&tv.path, PASSWORD).unwrap();
+
+    // 用一个同名目录顶住临时文件路径,让 write_atomic 必定失败。
+    let blocker = tv.path.with_extension("pkk.tmp");
+    std::fs::create_dir(&blocker).unwrap();
+
+    let err = vault
+        .change_master_password(PASSWORD, NEW_PASSWORD)
+        .unwrap_err();
+    assert!(matches!(err, VaultError::Io(_)), "got {err:?}");
+    assert!(vault.is_unlocked(), "改动失败也不该把库锁上");
+
+    // 挪开障碍,把当前内存状态落盘:磁盘上应仍是旧密码可解。
+    std::fs::remove_dir(&blocker).unwrap();
+    vault.save().unwrap();
+
+    assert!(VaultService::verify_master_password(&tv.path, PASSWORD));
+    assert!(!VaultService::verify_master_password(&tv.path, NEW_PASSWORD));
+}
+
+/// 重新生成恢复码时若写盘失败,同样不能把半成品头部留在内存里。
+#[test]
+fn failed_recovery_regen_rolls_back_header() {
+    let tv = TempVault::new("regenfail");
+    let old = tv.create(PASSWORD);
+
+    let mut vault = VaultService::new();
+    vault.open(&tv.path, PASSWORD).unwrap();
+
+    let blocker = tv.path.with_extension("pkk.tmp");
+    std::fs::create_dir(&blocker).unwrap();
+
+    let err = vault.regenerate_recovery_code().unwrap_err();
+    assert!(matches!(err, VaultError::Io(_)), "got {err:?}");
+
+    std::fs::remove_dir(&blocker).unwrap();
+    vault.save().unwrap();
+
+    // 旧恢复码在磁盘上仍然有效。
+    VaultService::new()
+        .open_with_recovery_code(&tv.path, &old)
+        .unwrap();
+}
+
 #[test]
 fn cached_key_unlock() {
     let tv = TempVault::new("cached");
