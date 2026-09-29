@@ -52,6 +52,10 @@ pub fn is_ready() -> bool {
 }
 
 /// 取得全局状态的可变引用(仅允许在 UI 线程调用)。
+///
+/// 与 `ui::state_ref` 同理:返回的是 `&'static mut`,再调一次就与上一把互为别名。
+/// 单线程并不使别名合法 —— 不要把结果存进局部变量后跨过可能重入的调用
+/// (定时器、模态对话框、`MessageBox`)继续使用;需要就"用时重新取"。
 #[allow(clippy::mut_from_ref)]
 pub fn state() -> &'static mut AppState {
     unsafe {

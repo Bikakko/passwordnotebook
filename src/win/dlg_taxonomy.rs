@@ -174,7 +174,8 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     );
 
     refresh(hwnd);
-    ui::set_focus(s.categories.input);
+    // refresh 会重新 st(hwnd),不能复用上面那把引用。
+    ui::set_focus(st(hwnd).categories.input);
 }
 
 fn refresh(hwnd: HWND) {

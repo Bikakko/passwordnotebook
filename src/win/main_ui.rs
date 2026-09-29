@@ -1443,8 +1443,11 @@ pub fn try_auto_unlock(hwnd: HWND) {
 
 fn after_unlock(hwnd: HWND) {
     // 设置是加密存在库里的,解锁后同步到内存。
-    if let Some(document) = app::state().vault.document() {
-        app::state().settings = document.settings.clone();
+    // 先把值拷出来再写回:不能一边借着 document(它来自 app::state()),
+    // 一边在同一句里再取一次 app::state() —— 那是两个可变引用别名。
+    let unlocked_settings = app::state().vault.document().map(|d| d.settings.clone());
+    if let Some(settings) = unlocked_settings {
+        app::state().settings = settings;
     }
 
     let settings = app::state().settings.clone();
@@ -1480,7 +1483,8 @@ fn after_unlock(hwnd: HWND) {
     refresh_list(hwnd);
     apply_mode(hwnd);
 
-    ui::set_focus(s.search);
+    // 上面几个都会重新 st(hwnd),所以这里重新取,别用上面那个 s。
+    ui::set_focus(st(hwnd).search);
 }
 
 fn create_vault(hwnd: HWND) {

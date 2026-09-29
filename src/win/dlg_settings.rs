@@ -247,7 +247,8 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     );
 
     on_quick_changed(hwnd);
-    ui::set_focus(s.quick);
+    // on_quick_changed 会重新 st(hwnd),不能复用上面那把引用。
+    ui::set_focus(st(hwnd).quick);
 }
 
 fn on_command(hwnd: HWND, id: usize, code: u16) {

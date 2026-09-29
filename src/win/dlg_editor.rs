@@ -200,8 +200,6 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     ui::set_text(s.tags, &result.tags.join(", "));
     ui::set_text(s.notes, &result.notes);
 
-    update_strength(hwnd);
-
     // 分类:只能从已创建的里面选,第一项是「未分类」。
     let current_category = s.result.category.clone();
     let available_categories = s.categories.clone();
@@ -237,7 +235,9 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
         font,
     );
 
-    ui::set_focus(s.title);
+    // update_strength 会重新 st(hwnd),放到最后调用:上面的 s 到这里已不再使用。
+    update_strength(hwnd);
+    ui::set_focus(st(hwnd).title);
 }
 
 /// 在窗口创建后由调用方补充分类下拉项。

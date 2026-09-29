@@ -186,6 +186,11 @@ pub unsafe fn user_data<T>(hwnd: HWND) -> *mut T {
 ///
 /// # Safety
 /// 同 [`user_data`]。
+///
+/// 返回的 `&mut` 生命周期不受约束,因此**不要把它存进局部变量后跨过可能重入本
+/// 窗口过程的调用继续持有**:定时器、模态对话框、`MessageBox`(见 [`confirm`] /
+/// [`info`] / [`error`])都会在调用期间派发消息,可能再次 `state_ref` 出同一对象
+/// 的 `&mut`,那就是两个可变引用别名。跨过这类调用就"用时重新取"。
 pub unsafe fn state_ref<'a, T>(hwnd: HWND) -> &'a mut T {
     unsafe { &mut *user_data::<T>(hwnd) }
 }
