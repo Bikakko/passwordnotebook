@@ -271,7 +271,7 @@ impl VaultService {
             return Err(VaultError::WrongSecret("当前主密码不正确。"));
         }
 
-        let dek = self.dek.as_ref().ok_or(VaultError::Locked)?.to_vec();
+        let dek = Zeroizing::new(self.dek.as_ref().ok_or(VaultError::Locked)?.to_vec());
         let file = self.file.as_mut().ok_or(VaultError::Locked)?;
 
         file.header.password_salt = crypto::random_array()?;
@@ -299,7 +299,7 @@ impl VaultService {
     /// 恢复码流程专用:在已知数据密钥的前提下重设主密码,不校验旧密码。
     pub fn reset_master_password(&mut self, new: &str) -> Result<()> {
         let path = self.path.clone().ok_or(VaultError::Locked)?;
-        let dek = self.dek.as_ref().ok_or(VaultError::Locked)?.to_vec();
+        let dek = Zeroizing::new(self.dek.as_ref().ok_or(VaultError::Locked)?.to_vec());
         let file = self.file.as_mut().ok_or(VaultError::Locked)?;
 
         file.header.password_salt = crypto::random_array()?;
@@ -327,7 +327,7 @@ impl VaultService {
     /// 重新生成恢复码,返回新码(旧码立即失效)。
     pub fn regenerate_recovery_code(&mut self) -> Result<String> {
         let path = self.path.clone().ok_or(VaultError::Locked)?;
-        let dek = self.dek.as_ref().ok_or(VaultError::Locked)?.to_vec();
+        let dek = Zeroizing::new(self.dek.as_ref().ok_or(VaultError::Locked)?.to_vec());
         let file = self.file.as_mut().ok_or(VaultError::Locked)?;
 
         let code = recovery::generate()?;
