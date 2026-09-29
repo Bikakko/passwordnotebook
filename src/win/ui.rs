@@ -24,7 +24,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DestroyMenu, DestroyWindow, GetCursorPos,
     GetDlgItem, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, HMENU, IDC_ARROW,
-    IsZoomed, KillTimer, LoadCursorW, MESSAGEBOX_STYLE, MessageBoxW, MF_GRAYED, MF_POPUP,
+    HICON, IsZoomed, KillTimer, LoadCursorW, LoadIconW, MESSAGEBOX_STYLE, MessageBoxW, MF_GRAYED,
+    MF_POPUP,
     MF_SEPARATOR, MF_STRING,
     NONCLIENTMETRICSW, PostMessageW, RegisterClassW, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
     SendMessageW, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowTextW, ShowWindow,
@@ -70,6 +71,16 @@ pub fn module_handle() -> HINSTANCE {
         .unwrap_or_default()
 }
 
+/// 图标资源编号,与 `app.rc` 保持一致。
+const APP_ICON_ID: usize = 1;
+
+/// 程序图标,取自 exe 内嵌的资源(编号 1 的图标组,含 16/32/48/256 多档)。
+fn app_icon() -> HICON {
+    // MAKEINTRESOURCE:把整数 ID 直接当指针传。
+    unsafe { LoadIconW(Some(module_handle()), PCWSTR(APP_ICON_ID as *const u16)) }
+        .unwrap_or_default()
+}
+
 pub fn register_class(name: &str, proc: WndProc) -> bool {
     let class_name = Wz::new(name);
     let class = WNDCLASSW {
@@ -80,7 +91,7 @@ pub fn register_class(name: &str, proc: WndProc) -> bool {
         cbClsExtra: 0,
         cbWndExtra: 0,
         hInstance: module_handle(),
-        hIcon: Default::default(),
+        hIcon: app_icon(),
         hCursor: unsafe { LoadCursorW(None, IDC_ARROW) }.unwrap_or_default(),
         // 经典习语:`(HBRUSH)(COLOR_WINDOW + 1)` 表示「系统颜色索引」而不是画刷句柄。
         // 用 GetStockObject(COLOR_WINDOW) 是不对的 —— 那里的 5 号是 NULL_BRUSH(空画刷),

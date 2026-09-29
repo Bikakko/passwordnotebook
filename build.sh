@@ -12,7 +12,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 cargo build --release --target x86_64-pc-windows-gnu
 
-EXE="target/x86_64-pc-windows-gnu/release/PasswordNotebook.exe"
+EXE="target/x86_64-pc-windows-gnu/release/pnb.exe"
 echo
 echo "已生成:$EXE"
 ls -la "$EXE"

@@ -1,2 +1,5 @@
 /* 资源编号 1、类型 24 = RT_MANIFEST */
 1 24 "app.manifest"
+
+/* 程序图标:编号 1 = RT_GROUP_ICON(多尺寸,16/32/48 为 BMP,256 为 PNG) */
+1 ICON "app.ico"

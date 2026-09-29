@@ -6,6 +6,7 @@
 fn main() {
     println!("cargo:rerun-if-changed=app.rc");
     println!("cargo:rerun-if-changed=app.manifest");
+    println!("cargo:rerun-if-changed=app.ico");
 
     // 只有给 Windows 目标编译时才需要 windres。
     if std::env::var("CARGO_CFG_WINDOWS").is_err() {

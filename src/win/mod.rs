@@ -45,7 +45,7 @@ use ui::Wz;
 const SINGLE_INSTANCE_MUTEX: &str = "PasswordNotebook.SingleInstance.v1";
 
 /// 程序名。
-pub const APP_NAME: &str = "我的密码本";
+pub const APP_NAME: &str = "PasswordNotebook";
 /// 版本号,来自 Cargo.toml。
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 

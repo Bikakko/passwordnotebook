@@ -1,6 +1,6 @@
 [package]
 name = "password-notebook"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 description = "本地密码本 —— 原生 Win32 界面"
 
@@ -9,7 +9,7 @@ name = "password_notebook"
 path = "src/lib.rs"
 
 [[bin]]
-name = "PasswordNotebook"
+name = "pnb"
 path = "src/main.rs"
 
 [dependencies]
