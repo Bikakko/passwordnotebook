@@ -757,24 +757,31 @@ fn matches(entry: &Entry, query: &str) -> bool {
 }
 
 fn refresh_list(hwnd: HWND) {
-    let s = st(hwnd);
+    // 先问"当前选中是哪条":它内部也会 st(hwnd),放到前面,免得与下面的 s 同时活着。
     let selected = selected_entry_id(hwnd);
+    let s = st(hwnd);
 
     let tab = ui::tabs_index(s.cat_tabs);
     let tag = ui::listbox_text(s.tag_list, ui::listbox_index(s.tag_list));
     let query = ui::get_text(s.search).trim().to_lowercase();
     let sort = ui::combo_index(s.sort_combo);
 
-    let mut items: Vec<Entry> = app::state().vault.active_entries().cloned().collect();
+    // 分类筛选要的名字先取好 —— 条目引用一旦借到手,就不好再调 app::state() 了。
+    let category_filter = if tab == TAB_ALL {
+        None
+    } else {
+        app::state()
+            .vault
+            .known_categories()
+            .get((tab - TAB_CATEGORY_BASE) as usize)
+            .cloned()
+    };
 
-    match tab {
-        TAB_ALL => {}
-        _ => {
-            let categories = app::state().vault.known_categories();
-            if let Some(name) = categories.get((tab - TAB_CATEGORY_BASE) as usize) {
-                items.retain(|e| e.category == *name);
-            }
-        }
+    // 只借引用,不 clone 整个 Entry —— 否则每个条目的密码副本也会跟着复制一遍。
+    let mut items: Vec<&Entry> = app::state().vault.active_entries().collect();
+
+    if let Some(name) = &category_filter {
+        items.retain(|e| e.category == *name);
     }
     if !tag.is_empty() && tag != ALL_TAGS {
         items.retain(|e| e.tags.iter().any(|t| *t == tag));
@@ -791,7 +798,7 @@ fn refresh_list(hwnd: HWND) {
 
     ui::listview_clear(s.list);
     s.rows.clear();
-    for entry in &items {
+    for &entry in &items {
         ui::listview_add_row(
             s.list,
             &[
@@ -819,12 +826,13 @@ fn refresh_bin(hwnd: HWND) {
     let retention = app::state().settings.bin_retention_days;
     let now = crate::model::now_secs();
 
-    let mut items: Vec<Entry> = app::state().vault.deleted_entries().cloned().collect();
+    // 同 refresh_list:只借引用,不 clone —— 回收站条目里也有密码副本。
+    let mut items: Vec<&Entry> = app::state().vault.deleted_entries().collect();
     items.sort_by(|a, b| b.deleted.cmp(&a.deleted));
 
     ui::listview_clear(s.bin_list);
     s.bin_rows.clear();
-    for entry in &items {
+    for &entry in &items {
         let deleted = entry.deleted.unwrap_or(now);
         let remaining = if retention <= 0 {
             "永久保留".to_string()
@@ -1274,18 +1282,29 @@ pub fn on_timer(hwnd: HWND, id: usize) {
     match id {
         TIMER_CLIPBOARD => {
             let s = st(hwnd);
-            let Some((deadline, expected)) = s.clipboard_deadline.clone() else {
-                ui::kill_timer(hwnd, TIMER_CLIPBOARD);
-                return;
-            };
-            if Instant::now() >= deadline {
-                if clipboard::get_text().as_deref() == Some(expected.as_str()) {
-                    clipboard::clear();
+
+            // 先看是否到期。没到期就直接走人 —— 原来这里每一拍都 clone 一次存着的
+            // 期望内容(多半就是密码),纯属白白多造一份明文副本。
+            let matched = match &s.clipboard_deadline {
+                None => {
+                    ui::kill_timer(hwnd, TIMER_CLIPBOARD);
+                    return;
                 }
-                s.clipboard_deadline = None;
-                ui::kill_timer(hwnd, TIMER_CLIPBOARD);
-                update_status(hwnd);
+                Some((deadline, expected)) => {
+                    if Instant::now() < *deadline {
+                        return;
+                    }
+                    // 到期了才比对,而且直接借用,不再 clone。
+                    clipboard::get_text().as_deref() == Some(expected.as_str())
+                }
+            };
+
+            if matched {
+                clipboard::clear();
             }
+            s.clipboard_deadline = None;
+            ui::kill_timer(hwnd, TIMER_CLIPBOARD);
+            update_status(hwnd);
         }
         TIMER_HELLO => {
             if let Some(verified) = hello::poll() {
