@@ -3,8 +3,8 @@
 //! 这里把 `windows` crate 的新类型(各种 `XXX_STYLE`、`SHOW_WINDOW_CMD` 等)
 //! 全部消化掉,调用方只需要普通的 u32 / i32,以及 [`sys`](super::sys) 里的常量。
 
-use std::sync::{Mutex, OnceLock};
 use std::ffi::c_void;
+use std::sync::{Mutex, OnceLock};
 
 use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
@@ -38,16 +38,25 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_ERASEBKGND,
 };
 
+use zeroize::Zeroizing;
+
 use super::sys::*;
 
 pub type WndProc = unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT;
 
 /// UTF-16 缓冲区,保证在 CreateWindowExW / RegisterClassW 调用期间指针有效。
-pub struct Wz(Vec<u16>);
+/// 宽字符缓冲。
+///
+/// 一律包一层 `Zeroizing`:被写进控件或消息框的文字里可能是密码
+/// (例如打开条目编辑器时把密码填进输入框),在这一层统一抹掉,
+/// 免得每个调用方各自记得处理 —— 读路径和写路径必须对称。
+pub struct Wz(Zeroizing<Vec<u16>>);
 
 impl Wz {
     pub fn new(s: &str) -> Self {
-        Self(s.encode_utf16().chain(std::iter::once(0)).collect())
+        Self(Zeroizing::new(
+            s.encode_utf16().chain(std::iter::once(0)).collect(),
+        ))
     }
 
     pub fn pcwstr(&self) -> PCWSTR {
@@ -335,17 +344,24 @@ pub fn kill_timer(hwnd: HWND, id: usize) {
 
 // ---------- 文本 ----------
 
+/// 读控件文本。非敏感内容用它;密码/恢复码请用 [`get_secret`]。
 pub fn get_text(hwnd: HWND) -> String {
+    get_secret(hwnd).to_string()
+}
+
+/// 读取控件文本,丢弃时自动清零 —— 用于登录密码、条目密码、恢复码这类内容。
+pub fn get_secret(hwnd: HWND) -> Zeroizing<String> {
     let len = unsafe { GetWindowTextLengthW(hwnd) };
     if len <= 0 {
-        return String::new();
+        return Zeroizing::new(String::new());
     }
-    let mut buf = vec![0u16; len as usize + 1];
+    // 中间那个宽字符缓冲里也是明文,同样包起来。
+    let mut buf = Zeroizing::new(vec![0u16; len as usize + 1]);
     let n = unsafe { GetWindowTextW(hwnd, &mut buf) };
     if n <= 0 {
-        return String::new();
+        return Zeroizing::new(String::new());
     }
-    String::from_utf16_lossy(&buf[..n as usize])
+    Zeroizing::new(String::from_utf16_lossy(&buf[..n as usize]))
 }
 
 pub fn set_text(hwnd: HWND, text: &str) {

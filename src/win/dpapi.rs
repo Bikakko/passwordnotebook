@@ -10,6 +10,7 @@ use windows::Win32::Foundation::LocalFree;
 use windows::Win32::Security::Cryptography::{
     CryptProtectData, CryptUnprotectData, CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN,
 };
+use zeroize::Zeroizing;
 
 const MAGIC: [u8; 4] = *b"PNBQ";
 const FLAG_REQUIRE_HELLO: u8 = 0x01;
@@ -50,7 +51,7 @@ pub fn store(vault_id: [u8; 16], key_generation: u32, dek: &[u8], require_hello:
 }
 
 /// 读取缓存;vault_id / key_generation 不匹配或解密失败时返回 None。
-pub fn load(vault_id: [u8; 16], key_generation: u32) -> Option<(Vec<u8>, bool, bool)> {
+pub fn load(vault_id: [u8; 16], key_generation: u32) -> Option<(Zeroizing<Vec<u8>>, bool, bool)> {
     let path = cache_path()?;
     let bytes = std::fs::read(path).ok()?;
 
@@ -110,7 +111,7 @@ fn blob(data: &[u8]) -> CRYPT_INTEGER_BLOB {
 }
 
 fn protect(data: &[u8]) -> Result<Vec<u8>, String> {
-    let mut secret = entropy();
+    let secret = entropy();
     let input = blob(data);
     let ent = blob(&secret);
     let mut output = CRYPT_INTEGER_BLOB::default();
@@ -129,13 +130,12 @@ fn protect(data: &[u8]) -> Result<Vec<u8>, String> {
 
         let result = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
         let _ = LocalFree(Some(windows::Win32::Foundation::HLOCAL(output.pbData as *mut _)));
-        secret.fill(0);
         Ok(result)
     }
 }
 
-fn unprotect(data: &[u8]) -> Result<Vec<u8>, String> {
-    let mut secret = entropy();
+fn unprotect(data: &[u8]) -> Result<Zeroizing<Vec<u8>>, String> {
+    let secret = entropy();
     let input = blob(data);
     let ent = blob(&secret);
     let mut output = CRYPT_INTEGER_BLOB::default();
@@ -152,9 +152,13 @@ fn unprotect(data: &[u8]) -> Result<Vec<u8>, String> {
         )
         .map_err(|e| e.to_string())?;
 
-        let result = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
+        let result = Zeroizing::new(
+            std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec(),
+        );
+        // output.pbData 是系统分配的、装着**明文 DEK** 的缓冲。
+        // LocalFree 只是把内存还给堆,不会清零 —— 不清就会留下可被翻出的副本。
+        std::ptr::write_bytes(output.pbData, 0, output.cbData as usize);
         let _ = LocalFree(Some(windows::Win32::Foundation::HLOCAL(output.pbData as *mut _)));
-        secret.fill(0);
         Ok(result)
     }
 }

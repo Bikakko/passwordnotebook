@@ -5,11 +5,18 @@ use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
 };
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+use zeroize::Zeroizing;
 
 const CF_UNICODETEXT: u32 = 13;
 
 pub fn set_text(text: &str) -> bool {
-    let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    // 这个宽字符缓冲里是明文(很多时候就是密码),用完抹掉。
+    // 注意:剪贴板本身仍会持有这段文字 —— 那是设计使然,靠自动清空处理。
+    let wide = Zeroizing::new(
+        text.encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<u16>>(),
+    );
     let bytes = wide.len() * 2;
 
     unsafe {

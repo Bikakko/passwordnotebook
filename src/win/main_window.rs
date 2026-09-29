@@ -159,7 +159,6 @@ fn setup_state() {
         font_bold: Default::default(),
         dpi: 96,
         main: HWND::default(),
-        cached: None,
         mode,
     });
 }

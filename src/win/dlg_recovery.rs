@@ -320,9 +320,9 @@ unsafe extern "system" fn recover_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
 
 fn do_reset(hwnd: HWND) {
     let s = st_recover(hwnd);
-    let code = ui::get_text(s.code);
-    let pw1 = ui::get_text(s.pw1);
-    let pw2 = ui::get_text(s.pw2);
+    let code = ui::get_secret(s.code);
+    let pw1 = ui::get_secret(s.pw1);
+    let pw2 = ui::get_secret(s.pw2);
 
     if !recovery::is_valid(&code) {
         ui::set_text(s.error, "恢复码格式不正确,应为 32 位字符(可含连字符)。");

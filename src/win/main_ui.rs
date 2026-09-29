@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{HWND, LPARAM};
 use windows::Win32::UI::Controls::NMHDR;
 
+use zeroize::Zeroizing;
+
 use crate::model::Entry;
 use crate::strength;
 use crate::vault::VaultService;
@@ -141,11 +143,13 @@ pub struct MainUi {
     /// 回收站列表当前显示顺序对应的条目 id。
     bin_rows: Vec<String>,
     /// 剪贴板自动清空:到期时间与期望内容。
-    clipboard_deadline: Option<(Instant, String)>,
+    /// 内容可能是密码,用 `Zeroizing` 让它到期后自动抹掉。
+    clipboard_deadline: Option<(Instant, Zeroizing<String>)>,
     /// 设备是否支持 Windows Hello(启动时探测一次)。
     hello_available: bool,
     /// 正在等待指纹验证的数据密钥(验证通过后才用它解锁)。
-    pending_hello_dek: Option<Vec<u8>>,
+    /// 用 `Zeroizing`:验证失败或界面切走时会被抹掉,而不是留在堆上。
+    pending_hello_dek: Option<Zeroizing<Vec<u8>>>,
 }
 
 impl MainUi {
@@ -912,7 +916,7 @@ pub fn on_command(hwnd: HWND, id: usize, code: u16) {
         }
         ID_CREATE_PW if code == EN_CHANGE => {
             let s = st(hwnd);
-            let value = ui::get_text(s.create_pw);
+            let value = ui::get_secret(s.create_pw);
             let hint = if value.is_empty() {
                 "建议至少 12 位,混合大小写字母、数字与符号。".to_string()
             } else {
@@ -1325,7 +1329,7 @@ fn set_unlock_error(hwnd: HWND, message: &str) {
 
 fn unlock_with_password(hwnd: HWND) {
     let path = vault_path();
-    let password = ui::get_text(st(hwnd).unlock_pw);
+    let password = ui::get_secret(st(hwnd).unlock_pw);
     if password.is_empty() {
         set_unlock_error(hwnd, "请输入登录密码。");
         return;
@@ -1480,7 +1484,7 @@ fn after_unlock(hwnd: HWND) {
 fn create_vault(hwnd: HWND) {
     let (password, confirm) = {
         let s = st(hwnd);
-        (ui::get_text(s.create_pw), ui::get_text(s.create_pw2))
+        (ui::get_secret(s.create_pw), ui::get_secret(s.create_pw2))
     };
 
     let fail = |msg: &str| ui::set_text(st(hwnd).create_error, msg);

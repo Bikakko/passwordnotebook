@@ -253,7 +253,7 @@ pub fn fill_categories(hwnd: HWND, categories: &[String], current: &str) {
 
 fn update_strength(hwnd: HWND) {
     let s = st(hwnd);
-    let value = ui::get_text(s.password);
+    let value = ui::get_secret(s.password);
     let text = if value.is_empty() {
         "尚未填写密码".to_string()
     } else {
@@ -308,7 +308,7 @@ fn save(hwnd: HWND) {
 
     s.result.title = title;
     s.result.username = ui::get_text(s.username).trim().to_string();
-    s.result.password = ui::get_text(s.password);
+    s.result.password = ui::get_secret(s.password);
     s.result.url = ui::get_text(s.url).trim().to_string();
     s.result.category = category;
     s.result.notes = ui::get_text(s.notes);

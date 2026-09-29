@@ -1,6 +1,7 @@
 //! 数据模型。序列化为 JSON 后作为载荷被加密。
 
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::crypto;
 
@@ -11,8 +12,9 @@ pub struct Entry {
     pub title: String,
     #[serde(default)]
     pub username: String,
+    /// 用 `Zeroizing`:条目在回收/丢弃时这块内存会被抹掉,而不是留在堆上。
     #[serde(default)]
-    pub password: String,
+    pub password: Zeroizing<String>,
     #[serde(default)]
     pub url: String,
     #[serde(default)]

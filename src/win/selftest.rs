@@ -224,7 +224,7 @@ fn core_checks() -> usize {
         let mut item = Entry {
             title: "GitHub".into(),
             username: "alice".into(),
-            password: "s3cret".into(),
+            password: zeroize::Zeroizing::new("s3cret".to_string()),
             category: "开发".into(),
             tags: vec!["工作".into()],
             ..Default::default()
@@ -304,7 +304,9 @@ fn core_checks() -> usize {
     let loaded = super::dpapi::load(vault_id, 3);
     check!(
         "DPAPI 缓存可写入并读回",
-        loaded.as_ref().is_some_and(|(d, h, _)| d == &[7u8; 32] && *h)
+        loaded
+            .as_ref()
+            .is_some_and(|(d, h, _)| d[..] == [7u8; 32][..] && *h)
     );
     check!(
         "KeyGeneration 不匹配时缓存失效",
@@ -505,7 +507,6 @@ pub fn preview_recovery() -> i32 {
         font_bold: Default::default(),
         dpi,
         main: HWND::default(),
-        cached: None,
         mode: app::Mode::Create,
     });
 

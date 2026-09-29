@@ -3,6 +3,8 @@
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::DefWindowProcW;
 
+use zeroize::Zeroizing;
+
 use crate::generator::{self, Options};
 
 use super::app;
@@ -30,7 +32,7 @@ const ID_CLOSE: usize = 13;
 struct GenState {
     use_button: bool,
     accepted: bool,
-    password: String,
+    password: Zeroizing<String>,
     length: HWND,
     upper: HWND,
     lower: HWND,
@@ -40,11 +42,11 @@ struct GenState {
     output: HWND,
 }
 
-pub fn show(owner: HWND, use_button: bool) -> Option<String> {
+pub fn show(owner: HWND, use_button: bool) -> Option<Zeroizing<String>> {
     let state = Box::new(GenState {
         use_button,
         accepted: false,
-        password: String::new(),
+        password: Zeroizing::new(String::new()),
         length: HWND::default(),
         upper: HWND::default(),
         lower: HWND::default(),
@@ -232,6 +234,6 @@ fn regenerate(hwnd: HWND) {
         exclude_ambiguous: ui::is_checked(s.no_ambiguous),
     };
 
-    s.password = generator::generate(&options).unwrap_or_default();
+    s.password = Zeroizing::new(generator::generate(&options).unwrap_or_default());
     ui::set_text(s.output, &s.password);
 }

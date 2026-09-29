@@ -11,14 +11,6 @@ use windows::Win32::Graphics::Gdi::HFONT;
 use crate::model::Settings;
 use crate::vault::VaultService;
 
-/// 本机免密解锁所需的材料(DEK 已由 DPAPI 解出)。
-pub struct CachedKey {
-    pub vault_id: [u8; 16],
-    pub key_generation: u32,
-    pub dek: Vec<u8>,
-    pub require_hello: bool,
-}
-
 pub struct AppState {
     pub settings: Settings,
     pub vault: VaultService,
@@ -26,7 +18,6 @@ pub struct AppState {
     pub font_bold: HFONT,
     pub dpi: u32,
     pub main: HWND,
-    pub cached: Option<CachedKey>,
     /// 主窗口当前处于哪种形态。
     pub mode: Mode,
 }

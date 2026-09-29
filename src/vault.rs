@@ -117,7 +117,8 @@ impl VaultService {
             .ok_or_else(|| VaultError::Crypto("恢复码生成异常。".into()))?;
 
         let document = Document::default();
-        let plain = serde_json::to_vec(&document)?;
+        // 整份库的明文(JSON)在堆上只活这一小会儿,用完立刻抹掉。
+        let plain = Zeroizing::new(serde_json::to_vec(&document)?);
         let payload = crypto::seal(&dek, &header.payload_nonce, &plain, &header.payload_aad())?;
 
         let password_wrapped = wrap_with_secret(
@@ -189,16 +190,18 @@ impl VaultService {
     }
 
     /// 用本机快速解锁缓存中的数据密钥直接打开(已由 DPAPI 解出)。
-    pub fn open_with_cached_key(&mut self, path: &Path, dek: Vec<u8>) -> Result<()> {
-        let dek = Zeroizing::new(dek);
+    pub fn open_with_cached_key(&mut self, path: &Path, dek: Zeroizing<Vec<u8>>) -> Result<()> {
         let file = VaultFile::read(path)?;
-        let plain = crypto::open(
-            &dek,
-            &file.header.payload_nonce,
-            &file.payload,
-            &file.header.payload_aad(),
-        )
-        .map_err(|_| VaultError::WrongSecret("本机免密缓存已失效,请输入主密码。"))?;
+        // 解密出来的是整份库的明文,用完立刻抹掉。
+        let plain = Zeroizing::new(
+            crypto::open(
+                &dek,
+                &file.header.payload_nonce,
+                &file.payload,
+                &file.header.payload_aad(),
+            )
+            .map_err(|_| VaultError::WrongSecret("本机免密缓存已失效,请输入主密码。"))?,
+        );
 
         let document: Document = serde_json::from_slice(&plain)?;
         self.file = Some(file);
@@ -210,12 +213,13 @@ impl VaultService {
     }
 
     fn adopt(&mut self, path: &Path, file: VaultFile, dek: Zeroizing<Vec<u8>>, via_recovery: bool) -> Result<()> {
-        let plain = crypto::open(
+        // 解密出来的是整份库的明文,用完立刻抹掉。
+        let plain = Zeroizing::new(crypto::open(
             &dek,
             &file.header.payload_nonce,
             &file.payload,
             &file.header.payload_aad(),
-        )?;
+        )?);
         let document: Document = serde_json::from_slice(&plain)?;
 
         self.file = Some(file);
@@ -236,7 +240,8 @@ impl VaultService {
         let file = self.file.as_mut().ok_or(VaultError::Locked)?;
 
         file.header.payload_nonce = crypto::random_array()?;
-        let plain = serde_json::to_vec(document)?;
+        // 待加密的明文同样只活这一小会儿。
+        let plain = Zeroizing::new(serde_json::to_vec(document)?);
         file.payload = crypto::seal(
             dek,
             &file.header.payload_nonce,

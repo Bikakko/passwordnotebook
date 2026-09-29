@@ -52,7 +52,7 @@ fn entry(title: &str, category: &str, tags: &[&str]) -> Entry {
     Entry {
         title: title.into(),
         username: format!("{title}@example.com"),
-        password: format!("pw-{title}"),
+        password: zeroize::Zeroizing::new(format!("pw-{title}")),
         category: category.into(),
         tags: tags.iter().map(|s| s.to_string()).collect(),
         ..Default::default()
@@ -106,7 +106,7 @@ fn entries_survive_reopen() {
     assert_eq!(reopened.entry_count(), 2);
 
     let mail = reopened.active_entries().find(|e| e.title == "邮箱").unwrap();
-    assert_eq!(mail.password, "pw-邮箱");
+    assert_eq!(mail.password.as_str(), "pw-邮箱");
     assert_eq!(mail.category, "个人");
 }
 
@@ -121,12 +121,12 @@ fn update_and_delete_flow() {
 
     let mut target = vault.active_entries().next().unwrap().clone();
     target.title = "站点(已改)".into();
-    target.password = "new-password".into();
+    target.password = zeroize::Zeroizing::new("new-password".to_string());
     vault.update_entry(target.clone()).unwrap();
 
     let stored = vault.active_entries().next().unwrap();
     assert_eq!(stored.title, "站点(已改)");
-    assert_eq!(stored.password, "new-password");
+    assert_eq!(stored.password.as_str(), "new-password");
     assert_eq!(stored.id, target.id, "更新不应改变 id");
 
     vault.move_to_bin(&target.id).unwrap();
@@ -294,12 +294,12 @@ fn cached_key_unlock() {
     let (_, _, dek) = vault.quick_unlock_material().unwrap();
 
     let mut cached = VaultService::new();
-    cached.open_with_cached_key(&tv.path, dek.to_vec()).unwrap();
+    cached.open_with_cached_key(&tv.path, dek.clone()).unwrap();
     assert!(cached.is_unlocked());
 
     let mut forged = VaultService::new();
     let err = forged
-        .open_with_cached_key(&tv.path, vec![0u8; 32])
+        .open_with_cached_key(&tv.path, zeroize::Zeroizing::new(vec![0u8; 32]))
         .unwrap_err();
     assert!(matches!(err, VaultError::WrongSecret(_)));
 }
@@ -401,4 +401,23 @@ fn taxonomy_is_managed_separately_from_entries() {
     assert_eq!(set(&reopened.known_tags()), set(&["代码"]));
     // 「个人」还在(只删了「研发」)
     assert_eq!(set(&reopened.known_categories()), set(&["个人"]));
+}
+
+/// 文件格式敏感:Entry.password 换成 Zeroizing<String> 后,JSON 表示
+/// 必须仍然是普通字符串,否则已存在的 .pkk 会读不出来。
+#[test]
+fn entry_password_stays_a_plain_json_string() {
+    let entry = Entry {
+        password: zeroize::Zeroizing::new("pw-x".to_string()),
+        ..Default::default()
+    };
+    let json = serde_json::to_string(&entry).unwrap();
+    assert!(
+        json.contains("\"password\":\"pw-x\""),
+        "password 的 JSON 表示被改动了:{json}"
+    );
+
+    // 反向:旧的 JSON(普通字符串)必须还能读进来。
+    let back: Entry = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.password.as_str(), "pw-x");
 }

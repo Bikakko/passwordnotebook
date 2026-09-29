@@ -306,9 +306,9 @@ fn save(hwnd: HWND) {
 
 fn change_password(hwnd: HWND) {
     let s = st(hwnd);
-    let current = ui::get_text(s.current_pw);
-    let new = ui::get_text(s.new_pw);
-    let confirm = ui::get_text(s.confirm_pw);
+    let current = ui::get_secret(s.current_pw);
+    let new = ui::get_secret(s.new_pw);
+    let confirm = ui::get_secret(s.confirm_pw);
 
     if current.is_empty() {
         ui::set_text(s.error, "请输入当前登录密码。");
