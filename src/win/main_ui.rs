@@ -104,6 +104,8 @@ const ID_TAXONOMY_BTN: usize = 2219;
 const ID_TRANSFER_BTN: usize = 2220;
 /// 「只看收藏」开关(可叠加在分类 / 标签 / 搜索之上)。
 const ID_FAV_ONLY_BTN: usize = 2221;
+/// 工具栏「新建」按钮(与右键菜单共用 `new_entry`)。
+const ID_NEW_BTN: usize = 2222;
 
 const ID_BIN_TITLE: usize = 2301;
 const ID_BIN_HINT: usize = 2302;
@@ -155,6 +157,8 @@ pub struct MainUi {
     pub create_btn: HWND,
     pub create_error: HWND,
 
+    /// 工具栏「新建」:不依赖列表空白区,任何时候都点得到。
+    pub new_btn: HWND,
     pub gen_btn: HWND,
     pub bin_btn: HWND,
     pub taxonomy_btn: HWND,
@@ -221,6 +225,7 @@ impl MainUi {
             create_strength: zero,
             create_btn: zero,
             create_error: zero,
+            new_btn: zero,
             gen_btn: zero,
             bin_btn: zero,
             taxonomy_btn: zero,
@@ -263,7 +268,7 @@ const ALL_CONTROL_IDS: &[usize] = &[
     ID_CREATE_TITLE, ID_CREATE_HINT, ID_CREATE_PATH_LABEL, ID_CREATE_PATH, ID_CREATE_PW_LABEL,
     ID_CREATE_PW, ID_CREATE_SHOW, ID_CREATE_PW2_LABEL, ID_CREATE_PW2, ID_CREATE_STRENGTH,
     ID_CREATE_BTN, ID_CREATE_ERROR,
-    ID_GEN_BTN, ID_BIN_BTN, ID_TAXONOMY_BTN, ID_TRANSFER_BTN, ID_FAV_ONLY_BTN,
+    ID_GEN_BTN, ID_BIN_BTN, ID_TAXONOMY_BTN, ID_TRANSFER_BTN, ID_FAV_ONLY_BTN, ID_NEW_BTN,
     ID_SETTINGS_BTN, ID_LOCK_BTN,
     ID_SEARCH, ID_CAT_TABS, ID_TAG_LABEL, ID_TAG_LIST, ID_LIST, ID_SORT_COMBO,
     ID_STATUS,
@@ -403,6 +408,7 @@ pub fn on_create(hwnd: HWND, lparam: LPARAM) {
     s.create_btn = button(hwnd, "创建并开始使用", BS_DEFPUSHBUTTON, ID_CREATE_BTN);
     s.create_error = text(hwnd, "", ID_CREATE_ERROR);
 
+    s.new_btn = button(hwnd, "新建", BS_PUSHBUTTON, ID_NEW_BTN);
     s.gen_btn = button(hwnd, "生成密码", BS_PUSHBUTTON, ID_GEN_BTN);
     s.bin_btn = button(hwnd, "回收站", BS_PUSHBUTTON, ID_BIN_BTN);
     s.taxonomy_btn = button(hwnd, "分类标签", BS_PUSHBUTTON, ID_TAXONOMY_BTN);
@@ -513,7 +519,7 @@ pub fn apply_mode(hwnd: HWND) {
         ui::set_visible(c, create);
     }
     for c in [
-        s.gen_btn, s.bin_btn, s.taxonomy_btn, s.transfer_btn, s.settings_btn, s.lock_btn,
+        s.new_btn, s.gen_btn, s.bin_btn, s.taxonomy_btn, s.transfer_btn, s.settings_btn, s.lock_btn,
         s.search, s.cat_tabs, s.fav_only_btn, s.tag_label, s.tag_list, s.list, s.sort_combo,
         s.status,
     ] {
@@ -627,7 +633,7 @@ fn layout_inner(hwnd: HWND) {
     let btn_h = scale(30);
     let gap = scale(6);
     let mut x = margin;
-    for b in [s.gen_btn, s.bin_btn, s.taxonomy_btn, s.transfer_btn] {
+    for b in [s.new_btn, s.gen_btn, s.bin_btn, s.taxonomy_btn, s.transfer_btn] {
         place(b, x, margin, btn_w, btn_h);
         x += btn_w + gap;
     }
@@ -1033,6 +1039,7 @@ pub fn on_command(hwnd: HWND, id: usize, code: u16) {
         ID_CREATE_BTN if code == BN_CLICKED => create_vault(hwnd),
 
         // --- 列表 ---
+        ID_NEW_BTN if code == BN_CLICKED => new_entry(hwnd),
         ID_SEARCH if code == EN_CHANGE => refresh_list(hwnd),
         ID_FAV_ONLY_BTN if code == BN_CLICKED => refresh_list(hwnd),
         ID_TAG_LIST if code == LBN_SELCHANGE => refresh_list(hwnd),
@@ -1346,6 +1353,10 @@ pub fn on_context_menu(hwnd: HWND) -> bool {
         menu.add_separator();
         menu.add(CMD_EDIT, "编辑");
         menu.add(CMD_DELETE, "删除");
+        // 条目上也给「新建」:列表铺满视口时下方没有空白可点,只靠空白区右键
+        // 会让新建彻底没有入口。
+        menu.add_separator();
+        menu.add(CMD_NEW, "新建");
     }
 
     match menu.track(hwnd) {
@@ -1353,19 +1364,7 @@ pub fn on_context_menu(hwnd: HWND) -> bool {
         Some(CMD_COPY_USER) => copy_username(hwnd),
         Some(CMD_OPEN_URL) => copy_selected_url(hwnd),
         Some(CMD_FAVORITE) => toggle_favorite_selected(hwnd),
-        Some(CMD_NEW) => {
-            let categories = app::state().vault.known_categories();
-            let tags = app::state().vault.known_tags();
-            if let Some(entry) = dlg_editor::show(hwnd, None, &categories, &tags) {
-                match app::state().vault.add_entry(entry) {
-                    Ok(()) => {
-                        refresh_filters(hwnd);
-                        refresh_list(hwnd);
-                    }
-                    Err(e) => ui::error(hwnd, &e.to_string(), "保存失败"),
-                }
-            }
-        }
+        Some(CMD_NEW) => new_entry(hwnd),
         Some(CMD_EDIT) => edit_selected(hwnd),
         Some(CMD_DELETE) => delete_selected(hwnd),
         Some(id) if id >= CMD_MOVE_BASE => {
@@ -1834,6 +1833,23 @@ fn lock_vault(hwnd: HWND) {
 }
 
 // ---------- 条目操作 ----------
+
+/// 新建条目。工具栏按钮与右键菜单共用这一条路径 ——
+/// 之前只有「右键列表下方空白处」一个入口,列表铺满视口后就再也点不到新建了。
+fn new_entry(hwnd: HWND) {
+    let categories = app::state().vault.known_categories();
+    let tags = app::state().vault.known_tags();
+    let Some(entry) = dlg_editor::show(hwnd, None, &categories, &tags) else {
+        return;
+    };
+    match app::state().vault.add_entry(entry) {
+        Ok(()) => {
+            refresh_filters(hwnd);
+            refresh_list(hwnd);
+        }
+        Err(e) => ui::error(hwnd, &e.to_string(), "保存失败"),
+    }
+}
 
 fn edit_selected(hwnd: HWND) {
     let Some(id) = selected_entry_id(hwnd) else {
