@@ -32,6 +32,12 @@ pub fn report_line(text: &str) {
         report.push_str("\r\n");
     }
 
+    // 优先走控制台的宽字符接口:中文不受控制台代码页影响。
+    // 标准输出被重定向到文件/管道时返回 false,再按 UTF-8 字节写。
+    if super::write_console(text) {
+        return;
+    }
+
     let mut stdout = std::io::stdout();
     let _ = stdout.write_all(text.as_bytes());
     let _ = stdout.write_all(b"\r\n");
@@ -75,8 +81,27 @@ pub fn run() -> i32 {
         if crate::paths::vault_exists() { "是" } else { "否" }
     );
 
-    println!("-- 高 DPI 诊断 --");
-    println!(
+    println!("-- 控制台诊断(中文乱码时看这里)--");
+    match super::console_info() {
+        Some(info) => {
+            println!(
+                "  输出代码页 = {} ({})",
+                info.output_code_page,
+                if info.output_code_page == 65001 {
+                    "UTF-8"
+                } else {
+                    "非 UTF-8;本程序走宽字符接口,不受影响"
+                }
+            );
+            println!(
+                "  窗口字体   = {} {}px, family={:#06x}",
+                info.font_face, info.font_size_y, info.font_family
+            );
+        }
+        None => println!("  SKIP  标准输出不是控制台(可能被重定向或没有控制台)"),
+    }
+
+    println!("-- 高 DPI 诊断 --");    println!(
         "  GetDpiForSystem = {}",
         unsafe { windows::Win32::UI::HiDpi::GetDpiForSystem() }
     );

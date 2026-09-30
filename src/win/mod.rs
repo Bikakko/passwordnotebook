@@ -173,6 +173,9 @@ pub fn prepare_console() -> ConsoleState {
         // 否则输出会写到上面那个「看着有效其实不可用」的句柄上。
         if windows::Win32::System::Console::AllocConsole().is_ok() {
             bind_console_handles();
+            // 自己开的窗口,顺手把它调成能显示中文的样子。
+            set_utf8_code_page();
+            ensure_console_font();
             return ConsoleState::Allocated;
         }
 
@@ -194,6 +197,53 @@ fn stdout_is_redirected() -> bool {
         }
         // 控制台是字符设备;文件是 FILE_TYPE_DISK,管道是 FILE_TYPE_PIPE。
         GetFileType(handle) != FILE_TYPE_CHAR
+    }
+}
+
+/// 当前控制台的文本信息,给自检输出用。
+///
+/// 中文在控制台里显示成乱码时,只有两个原因:输出代码页不是 UTF-8,
+/// 或者窗口字体没有汉字字形。把这两项打出来,下次就不用猜了。
+pub struct ConsoleInfo {
+    pub output_code_page: u32,
+    pub font_face: String,
+    pub font_size_y: i16,
+    pub font_family: u32,
+}
+
+/// 读取当前控制台信息;标准输出不是控制台时返回 `None`。
+pub fn console_info() -> Option<ConsoleInfo> {
+    use windows::Win32::Storage::FileSystem::{FILE_TYPE_CHAR, GetFileType};
+    use windows::Win32::System::Console::{
+        CONSOLE_FONT_INFOEX, GetConsoleOutputCP, GetCurrentConsoleFontEx, GetStdHandle,
+        STD_OUTPUT_HANDLE,
+    };
+
+    unsafe {
+        let handle = GetStdHandle(STD_OUTPUT_HANDLE).ok()?;
+        if handle.is_invalid() || GetFileType(handle) != FILE_TYPE_CHAR {
+            return None;
+        }
+
+        let mut font = CONSOLE_FONT_INFOEX {
+            cbSize: std::mem::size_of::<CONSOLE_FONT_INFOEX>() as u32,
+            ..Default::default()
+        };
+        let has_font = GetCurrentConsoleFontEx(handle, false, &mut font).is_ok();
+
+        let face = if has_font {
+            let end = font.FaceName.iter().position(|&c| c == 0).unwrap_or(font.FaceName.len());
+            String::from_utf16_lossy(&font.FaceName[..end])
+        } else {
+            "(未知)".to_string()
+        };
+
+        Some(ConsoleInfo {
+            output_code_page: GetConsoleOutputCP(),
+            font_face: face,
+            font_size_y: font.dwFontSize.Y,
+            font_family: font.FontFamily,
+        })
     }
 }
 
@@ -219,6 +269,87 @@ fn bind_console_handles() {
             let handle = HANDLE(file.as_raw_handle() as _);
             let _ = SetStdHandle(STD_INPUT_HANDLE, handle);
             std::mem::forget(file);
+        }
+    }
+}
+
+/// 把控制台代码页设为 UTF-8。
+///
+/// **只在自己开出来的窗口上做**:附加到用户已有终端时改代码页会影响到他后续的命令,
+/// 而本程序的中文输出已经走 [`write_console`] 的宽字符接口,本来就不依赖代码页。
+fn set_utf8_code_page() {
+    use windows::Win32::System::Console::{SetConsoleCP, SetConsoleOutputCP};
+
+    /// UTF-8 代码页(`CP_UTF8`);为拿一个常量启用 Win32_Globalization 不划算。
+    const CP_UTF8: u32 = 65001;
+
+    unsafe {
+        let _ = SetConsoleOutputCP(CP_UTF8);
+        let _ = SetConsoleCP(CP_UTF8);
+    }
+}
+
+/// 把一行文字直接写到控制台(UTF-16,`WriteConsoleW`)。
+///
+/// 相比让 Rust 的 stdout 写 UTF-8 字节,这条路**完全绕开控制台代码页**:
+/// 字节写法的解码方式取决于代码页,代码页没改成功(或用户手工改回去)时中文就是乱码。
+/// 返回 `false` 表示标准输出不是控制台(文件/管道)或写入失败,调用方应回退到字节写入。
+pub fn write_console(text: &str) -> bool {
+    use windows::Win32::Storage::FileSystem::{FILE_TYPE_CHAR, GetFileType};
+    use windows::Win32::System::Console::{GetStdHandle, STD_OUTPUT_HANDLE, WriteConsoleW};
+
+    unsafe {
+        let Ok(handle) = GetStdHandle(STD_OUTPUT_HANDLE) else {
+            return false;
+        };
+        if handle.is_invalid() || GetFileType(handle) != FILE_TYPE_CHAR {
+            return false;
+        }
+
+        let mut wide: Vec<u16> = text.encode_utf16().collect();
+        wide.extend_from_slice(&[b'\r' as u16, b'\n' as u16]);
+        WriteConsoleW(handle, &wide, None, None).is_ok()
+    }
+}
+
+/// 我们自己开出来的控制台窗口:确保用的是带中文字形的 TrueType 字体。
+///
+/// `AllocConsole` 用的默认字体在某些系统上是不含汉字的点阵字体,中文会显示成方块。
+/// 只在自己开的窗口上做这件事 —— 绝不改用户已有终端的字体设置。
+fn ensure_console_font() {
+    use windows::Win32::System::Console::{
+        CONSOLE_FONT_INFOEX, COORD, GetStdHandle, STD_OUTPUT_HANDLE, SetCurrentConsoleFontEx,
+    };
+
+    // 按优先级尝试:前几个都带中文字形,Consolas 只作为最后兜底。
+    const CANDIDATES: [&str; 4] = ["Microsoft YaHei Mono", "NSimSun", "SimSun", "Consolas"];
+    // 字号也要试:某些字体不支持指定字号时调用会直接失败。
+    const SIZES: [i16; 2] = [18, 16];
+
+    unsafe {
+        let Ok(handle) = GetStdHandle(STD_OUTPUT_HANDLE) else {
+            return;
+        };
+        if handle.is_invalid() {
+            return;
+        }
+
+        for size in SIZES {
+            for face in CANDIDATES {
+                let mut font = CONSOLE_FONT_INFOEX {
+                    cbSize: std::mem::size_of::<CONSOLE_FONT_INFOEX>() as u32,
+                    dwFontSize: COORD { X: 0, Y: size },
+                    FontWeight: 400,
+                    ..Default::default()
+                };
+                for (slot, unit) in font.FaceName.iter_mut().zip(face.encode_utf16()) {
+                    *slot = unit;
+                }
+                // 字体不存在时调用会失败,换下一个;成功就收工。
+                if SetCurrentConsoleFontEx(handle, false, &font).is_ok() {
+                    return;
+                }
+            }
         }
     }
 }
