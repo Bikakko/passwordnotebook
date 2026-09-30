@@ -2,7 +2,7 @@
 //!
 //! 与 `tests/vault.rs` 一样使用便宜版 KDF 参数(8 KiB / t=1 / p=1)以保证速度。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use zeroize::Zeroizing;
 
@@ -16,6 +16,15 @@ const M: u32 = 8;
 const T: u32 = 1;
 const P: u32 = 1;
 const PASSWORD: &str = "Correct-Horse-2024!";
+const NEW_PASSWORD: &str = "Another-Battery-2024!";
+
+/// 让**下一次**落盘失败:把 `data.pkk.tmp` 变成目录,`write_atomic` 在创建临时文件时
+/// 就失败,正式文件 `data.pkk` 完好无损。返回那个目录,测完删掉即可恢复可写。
+fn break_next_write(vault_path: &Path) -> PathBuf {
+    let tmp = vault_path.with_extension("pkk.tmp");
+    std::fs::create_dir(&tmp).unwrap();
+    tmp
+}
 
 struct TempDir {
     dir: PathBuf,
@@ -322,6 +331,91 @@ fn failed_import_keeps_the_vault_openable_with_the_same_password() {
     let mut reopened = VaultService::new();
     reopened.open(&path, PASSWORD).expect("同一主密码必须仍能打开");
     assert_eq!(reopened.entry_count(), 1);
+}
+
+/// 复核过的缺陷:失败的导入若在 `file.payload` 里留下残渣,下面三条「只重包密钥槽、
+/// 直接落盘 `file.payload`」的路径会把它真的写进磁盘。三条各一个用例。
+mod failed_import_residue {
+    use super::*;
+
+    /// 建库、放一条 A、让下一次落盘失败、导入 B(失败)、恢复可写。
+    /// 返回 (库实例, 库路径)。
+    fn setup(tmp: &TempDir) -> (VaultService, PathBuf) {
+        let mut vault = tmp.vault_with("vault.pkk");
+        vault
+            .add_entry(plain_entry("A", "alice", "pw-A"))
+            .unwrap();
+        let path = vault.path().unwrap().to_path_buf();
+
+        let broken = break_next_write(&path);
+        let incoming =
+            export_import::parse("title,username,password\nB,bob,pw-B\n", Some(Format::Csv))
+                .unwrap();
+        assert!(
+            vault
+                .import_entries(incoming, DuplicateStrategy::Append)
+                .is_err(),
+            "这一次落盘必须失败,否则用例前提不成立"
+        );
+        assert_eq!(vault.entry_count(), 1, "内存里应只剩 A");
+        std::fs::remove_dir(&broken).unwrap();
+
+        (vault, path)
+    }
+
+    fn titles_after_reopen(path: &Path, password: &str) -> Vec<String> {
+        let mut reopened = VaultService::new();
+        reopened.open(path, password).unwrap();
+        reopened
+            .active_entries()
+            .map(|e| e.title.clone())
+            .collect()
+    }
+
+    #[test]
+    fn not_written_by_password_change() {
+        let tmp = TempDir::new("residue-change");
+        let (mut vault, path) = setup(&tmp);
+        vault.change_master_password(PASSWORD, NEW_PASSWORD).unwrap();
+        assert_eq!(
+            titles_after_reopen(&path, NEW_PASSWORD),
+            vec!["A".to_string()],
+            "改主密码时不该把失败的导入写进磁盘"
+        );
+    }
+
+    #[test]
+    fn not_written_by_password_reset() {
+        let tmp = TempDir::new("residue-reset");
+        let (mut vault, path) = setup(&tmp);
+        vault.reset_master_password(NEW_PASSWORD).unwrap();
+        assert_eq!(
+            titles_after_reopen(&path, NEW_PASSWORD),
+            vec!["A".to_string()],
+            "重设密码时不该把失败的导入写进磁盘"
+        );
+    }
+
+    #[test]
+    fn not_written_by_recovery_regen() {
+        let tmp = TempDir::new("residue-recovery");
+        let (mut vault, path) = setup(&tmp);
+        vault.regenerate_recovery_code().unwrap();
+        assert_eq!(
+            titles_after_reopen(&path, PASSWORD),
+            vec!["A".to_string()],
+            "重生成恢复码时不该把失败的导入写进磁盘"
+        );
+    }
+
+    /// 载荷与随机数必须成对回滚:只回滚其一,下次落盘写出的文件解不开。
+    #[test]
+    fn vault_stays_openable_after_a_failed_write() {
+        let tmp = TempDir::new("residue-openable");
+        let (mut vault, path) = setup(&tmp);
+        vault.save().unwrap();
+        assert_eq!(titles_after_reopen(&path, PASSWORD), vec!["A".to_string()]);
+    }
 }
 
 #[test]

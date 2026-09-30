@@ -804,18 +804,42 @@ impl VaultService {
 ///
 /// **不碰 `VaultService::document`** —— 调用方负责在写盘成功之后才提交内存状态:
 /// 这样「内存超前于磁盘」这个中间态在批量操作里根本不存在(见 `import_entries`)。
+///
+/// 失败时连 `file` 里的载荷与随机数也要放回去。这一步不能省:`file.payload` 若在写盘
+/// 失败后仍停在「这次没写成功」的内容上,它就超前于 `self.document`,而改主密码 /
+/// 重设密码 / 重生成恢复码这三条路径**只重包密钥槽、直接落盘 `file.payload`** ——
+/// 会把这份没写成功的内容真的写出去(实测:失败的导入会在随后一次改主密码时进磁盘)。
 fn write_document(file: &mut VaultFile, dek: &[u8], path: &Path, document: &Document) -> Result<()> {
-    // 每次保存都换新的载荷随机数。
-    file.header.payload_nonce = crypto::random_array()?;
+    // 随机数与明文先算好:这两步失败时 file 还一个字节都没动。
+    let nonce = crypto::random_array()?;
     // 待加密的明文同样只活这一小会儿。
     let plain = Zeroizing::new(serde_json::to_vec(document)?);
-    file.payload = crypto::seal(
-        dek,
-        &file.header.payload_nonce,
-        &plain,
-        &file.header.payload_aad(),
-    )?;
-    file.write_atomic(path)
+
+    // 旧载荷用 take 挪出来(不复制密文),失败时原样放回。
+    let previous_nonce = file.header.payload_nonce;
+    let previous_payload = std::mem::take(&mut file.payload);
+
+    file.header.payload_nonce = nonce;
+    let aad = file.header.payload_aad();
+    let sealed = crypto::seal(dek, &nonce, &plain, &aad);
+
+    match sealed {
+        Ok(payload) => file.payload = payload,
+        Err(e) => {
+            file.header.payload_nonce = previous_nonce;
+            file.payload = previous_payload;
+            return Err(e);
+        }
+    }
+
+    if let Err(e) = file.write_atomic(path) {
+        // 载荷与随机数必须成对回滚:payload_aad() 里含 payload_nonce,
+        // 只回滚其一,下次落盘写出的就是一个解不开的文件。
+        file.header.payload_nonce = previous_nonce;
+        file.payload = previous_payload;
+        return Err(e);
+    }
+    Ok(())
 }
 
 fn ensure_category(document: &mut Document, category: &str) {
