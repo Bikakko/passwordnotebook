@@ -13,6 +13,7 @@ pub mod paths;
 pub mod recovery;
 pub mod search;
 pub mod strength;
+pub mod url;
 pub mod vault;
 pub mod vaultfile;
 

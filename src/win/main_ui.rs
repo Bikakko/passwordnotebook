@@ -1256,6 +1256,8 @@ const CMD_NEW: usize = 3004;
 const CMD_EDIT: usize = 3005;
 const CMD_DELETE: usize = 3006;
 const CMD_FAVORITE: usize = 3007;
+/// 用系统默认浏览器打开选中条目的网址。
+const CMD_OPEN_BROWSER: usize = 3008;
 
 /// 主列表的右键菜单:复制类操作放最上面。
 pub fn on_context_menu(hwnd: HWND) -> bool {
@@ -1319,9 +1321,11 @@ pub fn on_context_menu(hwnd: HWND) -> bool {
             })
             .unwrap_or((false, false, false, false));
 
-        // 没有内容的复制项灰显,点不动。
+        // 没有内容的复制项灰显,点不动。打开网址只按「有没有填」来灰显:
+        // 填了但不是 http(s) 的话,点了会给出具体原因,而不是灰着不给解释。
         menu.add_item(CMD_COPY_PW, "复制密码", has_password);
         menu.add_item(CMD_COPY_USER, "复制用户名", has_username);
+        menu.add_item(CMD_OPEN_BROWSER, "打开网址", has_url);
         menu.add_item(CMD_OPEN_URL, "复制网址", has_url);
         menu.add_separator();
         menu.add(
@@ -1363,6 +1367,7 @@ pub fn on_context_menu(hwnd: HWND) -> bool {
         Some(CMD_COPY_PW) => copy_password(hwnd),
         Some(CMD_COPY_USER) => copy_username(hwnd),
         Some(CMD_OPEN_URL) => copy_selected_url(hwnd),
+        Some(CMD_OPEN_BROWSER) => open_selected_url(hwnd),
         Some(CMD_FAVORITE) => toggle_favorite_selected(hwnd),
         Some(CMD_NEW) => new_entry(hwnd),
         Some(CMD_EDIT) => edit_selected(hwnd),
@@ -1972,6 +1977,30 @@ fn copy_selected_url(hwnd: HWND) {
 
     clipboard::set_text(&url);
     ui::set_text(st(hwnd).status, "已复制网址");
+}
+
+/// 用系统默认浏览器打开选中条目的网址。
+///
+/// 网址能不能交给浏览器由可移植核心 `url::normalize_http_url` 决定(白名单只放
+/// http/https,没写协议的补 https)。判定失败时如实说明原因 —— 而不是让菜单项
+/// 默默灰着,用户看不出为什么点不动。
+fn open_selected_url(hwnd: HWND) {
+    let Some(id) = selected_entry_id(hwnd) else {
+        return;
+    };
+    let Some(url) = with_entry(hwnd, &id, |e| e.url.clone()) else {
+        return;
+    };
+
+    if url.trim().is_empty() {
+        ui::info(hwnd, "这条记录没有填写网址。", "提示");
+        return;
+    }
+
+    match ui::open_url_in_browser(&url) {
+        Ok(()) => ui::set_text(st(hwnd).status, "已在默认浏览器中打开网址"),
+        Err(reason) => ui::info(hwnd, &reason, "无法打开网址"),
+    }
 }
 
 pub fn confirm_exit(hwnd: HWND) -> bool {

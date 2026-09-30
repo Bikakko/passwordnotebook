@@ -314,6 +314,45 @@ pub fn pick_file(owner: HWND, save: bool, filter: &[(&str, &str)], default_name:
     Some(String::from_utf16_lossy(&name[..end]))
 }
 
+/// 用系统默认浏览器打开网址。成功返回 `Ok(())`,否则返回可以直接给用户看的原因。
+///
+/// 先把网址过一遍可移植核心的允许名单([`crate::url::normalize_http_url`]):
+/// 只有 http(s) 会被交给 `ShellExecuteW`。这不是多此一举 —— `ShellExecuteW`
+/// 是按协议分派的,`file:` 能直接执行本地程序,所以允许名单必须是白名单。
+pub fn open_url_in_browser(raw: &str) -> Result<(), String> {
+    use windows::Win32::UI::Shell::ShellExecuteW;
+
+    let url = crate::url::normalize_http_url(raw).ok_or_else(|| {
+        "这条记录里的网址不能直接打开。\n\n只支持 http / https 链接(没写协议的会按 \
+         https 补全);本地路径、file:、javascript: 这类地址不会交给系统执行。"
+            .to_string()
+    })?;
+
+    let target = Wz::new(&url);
+    let verb = Wz::new("open");
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            verb.pcwstr(),
+            target.pcwstr(),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            // 用 windows crate 的类型化常量(sys.rs 里那个是给 ShowWindow 用的 i32)。
+            windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
+        )
+    };
+
+    // ShellExecuteW 的返回值 <= 32 表示失败(见 Win32 文档)。
+    if result.0 as usize > 32 {
+        Ok(())
+    } else {
+        Err(format!(
+            "系统没能打开浏览器(ShellExecute 返回 {})。请确认默认浏览器可用。",
+            result.0 as usize
+        ))
+    }
+}
+
 /// 取窗口位置(屏幕坐标)。
 pub fn window_rect(hwnd: HWND) -> (i32, i32, i32, i32) {
     let mut rect = windows::Win32::Foundation::RECT::default();
