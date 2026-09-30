@@ -102,6 +102,8 @@ const ID_STATUS: usize = 2218;
 const ID_TAXONOMY_BTN: usize = 2219;
 /// 导入 / 导出。
 const ID_TRANSFER_BTN: usize = 2220;
+/// 「只看收藏」开关(可叠加在分类 / 标签 / 搜索之上)。
+const ID_FAV_ONLY_BTN: usize = 2221;
 
 const ID_BIN_TITLE: usize = 2301;
 const ID_BIN_HINT: usize = 2302;
@@ -121,6 +123,7 @@ const TIMER_IDLE_PERIOD: u32 = 5000;
 const ALL_CATEGORIES: &str = "全部";
 const UNCATEGORIZED: &str = "未分类";
 const ALL_TAGS: &str = "全部标签";
+const FAV_ONLY_LABEL: &str = "只看收藏";
 
 /// 主窗口的全部控件句柄与运行期状态。
 pub struct MainUi {
@@ -156,6 +159,8 @@ pub struct MainUi {
     pub bin_btn: HWND,
     pub taxonomy_btn: HWND,
     pub transfer_btn: HWND,
+    /// 「只看收藏」开关:和分类 / 标签 / 搜索是叠加关系,不是页签。
+    pub fav_only_btn: HWND,
     pub settings_btn: HWND,
     pub lock_btn: HWND,
     pub search: HWND,
@@ -220,6 +225,7 @@ impl MainUi {
             bin_btn: zero,
             taxonomy_btn: zero,
             transfer_btn: zero,
+            fav_only_btn: zero,
             settings_btn: zero,
             lock_btn: zero,
             search: zero,
@@ -257,7 +263,7 @@ const ALL_CONTROL_IDS: &[usize] = &[
     ID_CREATE_TITLE, ID_CREATE_HINT, ID_CREATE_PATH_LABEL, ID_CREATE_PATH, ID_CREATE_PW_LABEL,
     ID_CREATE_PW, ID_CREATE_SHOW, ID_CREATE_PW2_LABEL, ID_CREATE_PW2, ID_CREATE_STRENGTH,
     ID_CREATE_BTN, ID_CREATE_ERROR,
-    ID_GEN_BTN, ID_BIN_BTN, ID_TAXONOMY_BTN, ID_TRANSFER_BTN,
+    ID_GEN_BTN, ID_BIN_BTN, ID_TAXONOMY_BTN, ID_TRANSFER_BTN, ID_FAV_ONLY_BTN,
     ID_SETTINGS_BTN, ID_LOCK_BTN,
     ID_SEARCH, ID_CAT_TABS, ID_TAG_LABEL, ID_TAG_LIST, ID_LIST, ID_SORT_COMBO,
     ID_STATUS,
@@ -401,6 +407,7 @@ pub fn on_create(hwnd: HWND, lparam: LPARAM) {
     s.bin_btn = button(hwnd, "回收站", BS_PUSHBUTTON, ID_BIN_BTN);
     s.taxonomy_btn = button(hwnd, "分类标签", BS_PUSHBUTTON, ID_TAXONOMY_BTN);
     s.transfer_btn = button(hwnd, "导入/导出", BS_PUSHBUTTON, ID_TRANSFER_BTN);
+    s.fav_only_btn = button(hwnd, FAV_ONLY_LABEL, BS_AUTOCHECKBOX, ID_FAV_ONLY_BTN);
     s.settings_btn = button(hwnd, "设置", BS_PUSHBUTTON, ID_SETTINGS_BTN);
     s.lock_btn = button(hwnd, "锁定", BS_PUSHBUTTON, ID_LOCK_BTN);
     s.search = edit(hwnd, ES_AUTOHSCROLL, ID_SEARCH);
@@ -507,7 +514,7 @@ pub fn apply_mode(hwnd: HWND) {
     }
     for c in [
         s.gen_btn, s.bin_btn, s.taxonomy_btn, s.transfer_btn, s.settings_btn, s.lock_btn,
-        s.search, s.cat_tabs, s.tag_label, s.tag_list, s.list, s.sort_combo,
+        s.search, s.cat_tabs, s.fav_only_btn, s.tag_label, s.tag_list, s.list, s.sort_combo,
         s.status,
     ] {
         ui::set_visible(c, main);
@@ -661,10 +668,26 @@ fn layout_inner(hwnd: HWND) {
     let tabs_x = margin + pane_w + scale(10);
     let tabs_w = (cw - tabs_x - margin).max(scale(200));
     let tabs_h = scale(36);
-    place(s.cat_tabs, tabs_x, top, tabs_w, tabs_h);
+
+    // 「只看收藏」开关贴在页签条右侧,单独占一块:页签条是自绘的、只排一行,放不下时
+    // 会把多余的页签直接裁掉,所以这个开关**不能**做成页签。
+    // 文字宽度按当前字号量;字体还没就绪时量出 0,用下限兜住,免得标题被裁。
+    let fav_text_w = ui::text_width(hwnd, app::state().font, FAV_ONLY_LABEL).max(scale(56));
+    let fav_h = scale(30);
+    let fav_w = (scale(24) + fav_text_w + scale(12)).min(tabs_w / 3);
+    let strip_w = (tabs_w - fav_w - scale(10)).max(scale(120));
+    place(s.cat_tabs, tabs_x, top, strip_w, tabs_h);
+    place(
+        s.fav_only_btn,
+        tabs_x + tabs_w - fav_w,
+        top + (tabs_h - fav_h) / 2,
+        fav_w,
+        fav_h,
+    );
 
     let list_y = top + tabs_h + scale(4);
     let list_h = (body_h - tabs_h - scale(4)).max(scale(60));
+    // 列表占满整行宽度(开关只占页签那一行,不与列表抢位置)。
     place(s.list, tabs_x, list_y, tabs_w, list_h);
     if app::state().settings.column_widths.len() == MAIN_LIST_COLUMNS.len() {
         for (index, &logical_w) in app::state().settings.column_widths.iter().enumerate() {
@@ -835,15 +858,15 @@ fn refresh_list(hwnd: HWND) {
     // 只借引用,不 clone 整个 Entry —— 否则每个条目的密码副本也会跟着复制一遍。
     let mut items: Vec<&Entry> = app::state().vault.active_entries().collect();
 
-    if let Some(name) = &category_filter {
-        items.retain(|e| e.category == *name);
-    }
-    if !tag.is_empty() && tag != ALL_TAGS {
-        items.retain(|e| e.tags.iter().any(|t| *t == tag));
-    }
-    if !query.is_empty() {
-        items.retain(|e| crate::search::matches(e, &query));
-    }
+    // 分类页签 × 标签 × 搜索词 × 只看收藏,四项「与」关系叠加;
+    // 判定规则放在可移植核心 `search` 里,单测覆盖叠加语义。
+    let filter = crate::search::ListFilter {
+        category: category_filter.as_deref(),
+        tag: (!tag.is_empty() && tag != ALL_TAGS).then_some(tag.as_str()),
+        query: &query,
+        favorites_only: ui::is_checked(s.fav_only_btn),
+    };
+    items.retain(|e| filter.accept(e));
 
     // 收藏置顶、搜索命中优先这些规则都在可移植核心 `search` 里(那样才测得到);
     // 界面只负责把下拉框下标翻译成排序方式。
@@ -920,13 +943,27 @@ fn update_status(hwnd: HWND) {
     } else {
         String::new()
     };
+    // 开关打开时才报收藏总数;一条都没有时顺手告诉用户怎么收藏。
+    let favorites = vault.active_entries().filter(|e| e.favorite).count();
+    let fav_part = if ui::is_checked(s.fav_only_btn) {
+        if favorites == 0 {
+            "  ·  还没有收藏:在列表里右键条目,选「收藏」".to_string()
+        } else {
+            format!(";收藏 {favorites} 条")
+        }
+    } else {
+        String::new()
+    };
     let path = vault
         .path()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
     ui::set_text(
         s.status,
-        &format!("共 {total} 条,当前显示 {}{bin_part}  ·  {path}", s.rows.len()),
+        &format!(
+            "共 {total} 条,当前显示 {}{bin_part}{fav_part}  ·  {path}",
+            s.rows.len()
+        ),
     );
 }
 
@@ -997,6 +1034,7 @@ pub fn on_command(hwnd: HWND, id: usize, code: u16) {
 
         // --- 列表 ---
         ID_SEARCH if code == EN_CHANGE => refresh_list(hwnd),
+        ID_FAV_ONLY_BTN if code == BN_CLICKED => refresh_list(hwnd),
         ID_TAG_LIST if code == LBN_SELCHANGE => refresh_list(hwnd),
         ID_SORT_COMBO if code == CBN_SELCHANGE => refresh_list(hwnd),
         ID_GEN_BTN if code == BN_CLICKED => {

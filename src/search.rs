@@ -65,6 +65,40 @@ pub fn matches(entry: &Entry, query: &str) -> bool {
     match_score(entry, query) > 0
 }
 
+/// 主列表的筛选条件:各项之间是「与」的关系,可以任意叠加
+/// (分类页签 × 标签 × 搜索词 × 只看收藏)。
+///
+/// 这些都是列表视图状态,不是数据本身 —— 所以 `Default` 是「什么都不筛」。
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ListFilter<'a> {
+    /// 当前分类页签对应的分类名;`None` 表示「全部」。
+    pub category: Option<&'a str>,
+    /// 当前选中的标签;`None` 表示「全部标签」。
+    pub tag: Option<&'a str>,
+    /// 搜索词(调用方负责 trim + 转小写);空串表示不按搜索词筛。
+    pub query: &'a str,
+    /// 「只看收藏」开关。
+    pub favorites_only: bool,
+}
+
+impl ListFilter<'_> {
+    pub fn accept(&self, entry: &Entry) -> bool {
+        if self.favorites_only && !entry.favorite {
+            return false;
+        }
+        if self.category.is_some_and(|c| entry.category != c) {
+            return false;
+        }
+        if self.tag.is_some_and(|t| !entry.tags.iter().any(|x| x == t)) {
+            return false;
+        }
+        if !self.query.is_empty() && !matches(entry, self.query) {
+            return false;
+        }
+        true
+    }
+}
+
 /// 就地排序:收藏置顶 → 搜索命中质量 → 用户选的排序方式。
 ///
 /// 收藏优先于命中质量是有意为之:收藏是用户显式表达的「常用」,不该被一次
@@ -210,5 +244,84 @@ mod tests {
         assert_eq!(SortMode::from_combo(2), SortMode::Category);
         assert_eq!(SortMode::from_combo(-1), SortMode::Updated);
         assert_eq!(SortMode::from_combo(99), SortMode::Updated);
+    }
+
+    // ---------- 列表筛选(可叠加) ----------
+
+    fn fav(title: &str, category: &str, tags: &[&str]) -> Entry {
+        Entry {
+            title: title.into(),
+            category: category.into(),
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            favorite: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn default_filter_accepts_everything() {
+        let filter = ListFilter::default();
+        assert!(filter.accept(&entry("随便", "")));
+        assert!(filter.accept(&fav("收藏的", "工作", &["重要"])));
+    }
+
+    #[test]
+    fn favorites_only_drops_the_rest() {
+        let filter = ListFilter {
+            favorites_only: true,
+            ..Default::default()
+        };
+        assert!(filter.accept(&fav("收藏的", "", &[])));
+        assert!(!filter.accept(&entry("没收藏", "")));
+    }
+
+    #[test]
+    fn favorites_only_composes_with_category_tag_and_query() {
+        let target = fav("GitHub 主号", "工作", &["重要"]);
+
+        let hit = ListFilter {
+            favorites_only: true,
+            category: Some("工作"),
+            tag: Some("重要"),
+            query: "github",
+        };
+        assert!(hit.accept(&target), "四项条件都满足应留下");
+
+        // 任意一项不满足都要被筛掉 —— 这正是「开关能叠加」的含义。
+        let wrong_category = ListFilter {
+            category: Some("个人"),
+            ..hit
+        };
+        assert!(!wrong_category.accept(&target));
+
+        let wrong_tag = ListFilter { tag: Some("备用"), ..hit };
+        assert!(!wrong_tag.accept(&target));
+
+        let wrong_query = ListFilter { query: "gitlab", ..hit };
+        assert!(!wrong_query.accept(&target));
+
+        let not_favorite = ListFilter {
+            favorites_only: false,
+            ..ListFilter::default()
+        };
+        assert!(not_favorite.accept(&target), "关掉开关后不看收藏状态");
+    }
+
+    #[test]
+    fn category_filter_matches_exactly_and_ignores_empty_category() {
+        let filter = ListFilter {
+            category: Some("工作"),
+            ..Default::default()
+        };
+        let mut work = entry("有分类", "");
+        work.category = "工作".into();
+        let mut personal = entry("别的分类", "");
+        personal.category = "个人".into();
+        let uncategorized = entry("没分类", "");
+
+        assert!(filter.accept(&work));
+        assert!(!filter.accept(&personal));
+        // 「未分类」的条目只在「全部」页签出现,不会被任何分类页签收进来。
+        assert!(!filter.accept(&uncategorized));
     }
 }
