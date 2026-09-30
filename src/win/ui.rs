@@ -734,6 +734,17 @@ pub fn scale(v: i32) -> i32 {
     (v as f32 * dpi as f32 / 96.0).round() as i32
 }
 
+/// 将当前界面 DPI 下的物理像素换算回 96 DPI 基准的逻辑像素。
+pub fn unscale(v: i32) -> i32 {
+    let dpi = if super::app::is_ready() {
+        super::app::state().dpi
+    } else {
+        system_dpi()
+    }
+    .max(96);
+    ((v as f32 * 96.0) / dpi as f32).round() as i32
+}
+
 /// 取系统 DPI。
 ///
 /// **必须在创建窗口之前调用**:`WM_CREATE` 阶段窗口还没关联到显示器,

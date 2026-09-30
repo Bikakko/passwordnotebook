@@ -32,7 +32,7 @@ pub const LIST_ROW_HEIGHT: i32 = 30;
 /// COLORREF 为 0x00BBGGRR:RGB(197, 202, 211) -> 0x00D3CAC5
 pub const GRIDLINE_COLOR: u32 = 0x00D3_CAC5;
 
-/// 列表列定义:(列标题, 默认逻辑像素宽度, 默认百分比分配)
+/// 列表列定义:(列标题, 96 DPI 基准逻辑像素宽度, 默认百分比分配)
 pub type ListColDef = (&'static str, i32, i32);
 
 /// 主列表列配置
@@ -431,7 +431,7 @@ pub fn on_create(hwnd: HWND, lparam: LPARAM) {
 
     ui::listview_set_extended_style(s.list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
     for (i, &(title, width, _)) in MAIN_LIST_COLUMNS.iter().enumerate() {
-        ui::listview_add_column(s.list, i as i32, width, title);
+        ui::listview_add_column(s.list, i as i32, scale(width), title);
     }
 
     s.bin_title = text(hwnd, "回收站", ID_BIN_TITLE);
@@ -448,7 +448,7 @@ pub fn on_create(hwnd: HWND, lparam: LPARAM) {
 
     ui::listview_set_extended_style(s.bin_list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
     for (i, &(title, width, _)) in BIN_LIST_COLUMNS.iter().enumerate() {
-        ui::listview_add_column(s.bin_list, i as i32, width, title);
+        ui::listview_add_column(s.bin_list, i as i32, scale(width), title);
     }
 
     ui::combo_add(s.sort_combo, "更新时间");
@@ -543,10 +543,16 @@ pub fn apply_mode(hwnd: HWND) {
     }
 }
 
-/// 按 DPI 缩放。
+/// 按当前 DPI 缩放逻辑像素(96 DPI 逻辑像素 -> 当前物理像素)。
 fn scale(v: i32) -> i32 {
     let dpi = app::state().dpi as f32;
     (v as f32 * dpi / 96.0).round() as i32
+}
+
+/// 逆向 DPI 缩放(当前物理像素 -> 96 DPI 基准逻辑像素)。
+fn unscale(v: i32) -> i32 {
+    let dpi = app::state().dpi.max(96) as f32;
+    ((v as f32 * 96.0) / dpi).round() as i32
 }
 
 fn place(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) {
@@ -656,8 +662,11 @@ fn layout_inner(hwnd: HWND) {
     let list_h = (body_h - tabs_h - scale(4)).max(scale(60));
     place(s.list, tabs_x, list_y, tabs_w, list_h);
     if app::state().settings.column_widths.len() == MAIN_LIST_COLUMNS.len() {
-        for (index, &width) in app::state().settings.column_widths.iter().enumerate() {
-            ui::listview_set_column_width(s.list, index as i32, width);
+        for (index, &logical_w) in app::state().settings.column_widths.iter().enumerate() {
+            let target_w = scale(logical_w).max(scale(20));
+            if ui::listview_get_column_width(s.list, index as i32) != target_w {
+                ui::listview_set_column_width(s.list, index as i32, target_w);
+            }
         }
     } else {
         let percents: Vec<i32> = MAIN_LIST_COLUMNS.iter().map(|c| c.2).collect();
@@ -1163,17 +1172,20 @@ pub fn on_notify(hwnd: HWND, lparam: LPARAM) -> isize {
     0
 }
 
-/// 用户在主列表中调整了某一列的宽度:读取全部列的宽度并持久化到 data.pkk
+/// 用户在主列表中调整了某一列的宽度:读取全部列的物理宽度并转换为 96 DPI 逻辑像素持久化到 data.pkk
 pub fn on_column_resized(hwnd: HWND) {
     if app::state().mode != Mode::Unlocked || !app::state().vault.is_unlocked() {
         return;
     }
     let s = st(hwnd);
-    let widths: Vec<i32> = (0..MAIN_LIST_COLUMNS.len())
-        .map(|i| ui::listview_get_column_width(s.list, i as i32))
+    let logical_widths: Vec<i32> = (0..MAIN_LIST_COLUMNS.len())
+        .map(|i| {
+            let phys_w = ui::listview_get_column_width(s.list, i as i32);
+            unscale(phys_w).max(20)
+        })
         .collect();
-    if widths.iter().all(|&w| w > 0) && app::state().settings.column_widths != widths {
-        app::state().settings.column_widths = widths.clone();
+    if logical_widths.iter().all(|&w| w > 0) && app::state().settings.column_widths != logical_widths {
+        app::state().settings.column_widths = logical_widths.clone();
         let _ = app::state().vault.update_settings(app::state().settings.clone());
     }
 }

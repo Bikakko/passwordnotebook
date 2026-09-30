@@ -105,7 +105,7 @@ pub struct Settings {
     pub bin_retention_days: i64,
     /// 窗口置顶。
     pub always_on_top: bool,
-    /// 自定义列表各列宽度(像素):[标题, 用户名, 网址, 分类, 标签, 更新时间]。
+    /// 自定义列表各列宽度(逻辑像素, 96 DPI 基准):[标题, 用户名, 网址, 分类, 标签, 更新时间]。
     /// 若为空表示未调整过,使用默认长度与比例。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub column_widths: Vec<i32>,
