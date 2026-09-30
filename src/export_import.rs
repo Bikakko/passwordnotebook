@@ -825,6 +825,84 @@ mod tests {
         }
     }
 
+    /// 确定性伪随机(不引入依赖)地生成大量刁钻字段,验证 CSV 往返恒等。
+    ///
+    /// 手写用例只能覆盖想到的情况;这个测试用固定种子的 xorshift
+    /// 把标点、空白、中文与所有「防护字符」随机组合起来,覆盖面大得多,
+    /// 而且失败时可以复现。
+    #[test]
+    fn csv_round_trips_random_fields() {
+        const ALPHABET: [char; 20] = [
+            'a', 'Z', '0', ',', '"', '\n', '\r', ' ', '\t', ';', '|', '=', '+', '-', '@', '\'', '中', '文',
+            '\\', '\u{feff}',
+        ];
+
+        let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut random_field = || {
+            let len = (next() % 12) as usize;
+            (0..len)
+                .map(|_| ALPHABET[(next() % ALPHABET.len() as u64) as usize])
+                .collect::<String>()
+        };
+
+        let mut document = Document::default();
+        let mut expected: Vec<(String, String, String, String, String, String)> = Vec::new();
+        for index in 0..300 {
+            let title = random_field();
+            let password = random_field();
+            let url = random_field();
+            let category = random_field();
+            let notes = random_field();
+            let tags = random_field();
+            expected.push((
+                title.clone(),
+                password.clone(),
+                url.clone(),
+                category.clone(),
+                notes.clone(),
+                tags.clone(),
+            ));
+            document.entries.push(Entry {
+                // 用户名固定非空:否则整条全空的行会在解析时被当作空行丢掉。
+                title,
+                username: format!("user-{index}"),
+                password: Zeroizing::new(password),
+                url,
+                category,
+                tags: vec![tags],
+                notes,
+                ..Default::default()
+            });
+        }
+
+        let text = export_csv(&document, ExportOptions::default());
+        let parsed = parse_csv(&text).unwrap();
+        assert_eq!(parsed.len(), expected.len(), "行数应保持不变");
+
+        // 导出会按标题排序,所以按「标题 + 用户名」回查,而不是按位置对齐。
+        for entry in &parsed {
+            let index: usize = entry
+                .username
+                .strip_prefix("user-")
+                .and_then(|s| s.parse().ok())
+                .expect("用户名应原样保留");
+            let want = &expected[index];
+
+            assert_eq!(entry.title, want.0, "标题往返失败:{:?}", want.0);
+            assert_eq!(entry.password.as_str(), want.1, "密码往返失败:{:?}", want.1);
+            assert_eq!(entry.url, want.2, "网址往返失败:{:?}", want.2);
+            assert_eq!(entry.category, want.3, "分类往返失败:{:?}", want.3);
+            assert_eq!(entry.notes, want.4, "备注往返失败:{:?}", want.4);
+            assert_eq!(entry.tags, split_tags(&want.5), "标签往返失败:{:?}", want.5);
+        }
+    }
+
     #[test]
     fn recognizes_third_party_headers() {
         let chrome = "name,url,username,password,note\n示例,https://a.com,me,pw,备注\n";
