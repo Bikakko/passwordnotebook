@@ -3,3 +3,7 @@
 
 # 构建脚本产出的临时文件
 *.pdb
+
+# 本地工具与配置
+.commandcode/
+AGENTS.md
