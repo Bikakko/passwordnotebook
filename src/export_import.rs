@@ -179,12 +179,13 @@ pub fn import_from_path(path: &Path) -> Result<Vec<Entry>> {
 
 /// 按内容解析导入文本;`hint` 为 `None` 时自动判断 JSON / CSV。
 pub fn parse(text: &str, hint: Option<Format>) -> Result<Vec<Entry>> {
-    let text = text.trim_start_matches('\u{feff}');
-    if text.trim().is_empty() {
+    let trimmed = text.trim_start_matches('\u{feff}');
+    if trimmed.trim().is_empty() {
         return Err(VaultError::Invalid("文件里没有任何内容。".into()));
     }
-    match hint.unwrap_or_else(|| detect_format(text)) {
-        Format::Json => parse_json(text),
+    match hint.unwrap_or_else(|| detect_format(trimmed)) {
+        Format::Json => parse_json(trimmed),
+        // CSV 解析器自己会处理 BOM,并且要靠它判断「这是不是本程序导出的文件」。
         Format::Csv => parse_csv(text),
     }
 }
@@ -385,7 +386,7 @@ const URL_ALIASES: &[&str] = &[
 const CATEGORY_ALIASES: &[&str] = &["category", "folder", "group", "grouping", "分类", "分组", "文件夹", "目录"];
 const TAGS_ALIASES: &[&str] = &["tags", "tag", "labels", "label", "标签"];
 const FAVORITE_ALIASES: &[&str] = &[
-    "favorite", "favourite", "starred", "pinned", "收藏", "收藏夹", "置顶",
+    "favorite", "favourite", "fav", "starred", "pinned", "收藏", "收藏夹", "置顶",
 ];
 const NOTES_ALIASES: &[&str] = &["notes", "note", "comment", "comments", "extra", "memo", "备注", "说明", "注释"];
 const ID_ALIASES: &[&str] = &["id", "uuid", "标识"];
@@ -449,12 +450,15 @@ fn parse_csv(text: &str) -> Result<Vec<Entry>> {
         ));
     }
 
+    // 只有本程序导出的文件才可能带公式防护前缀,见 is_own_export。
+    let unguard = is_own_export(text, &records[header_index]);
+
     let mut out = Vec::new();
     for record in &records[header_index + 1..] {
         if record.iter().all(|c| c.trim().is_empty()) {
             continue;
         }
-        let entry = entry_from_row(&header, record);
+        let entry = entry_from_row(&header, record, unguard);
         if is_blank_entry(&entry) {
             continue;
         }
@@ -467,14 +471,49 @@ fn parse_csv(text: &str) -> Result<Vec<Entry>> {
     Ok(out)
 }
 
-fn entry_from_row(header: &[Option<Field>], record: &[String]) -> Entry {
+/// 这份 CSV 是不是本程序自己导出的(也就是:里面的单元格有没有可能被加了公式防护前缀)。
+///
+/// 判据是「带 BOM + 表头正好是我们那几列、顺序一致」。必须这么判而不能无条件去前缀,
+/// 因为防护前缀是一个**带内**转义(单引号 + 原值),而单引号本身完全可以是数据的一部分:
+/// 别人家的导出里 `'=x` 就是一个以单引号开头的真实密码,无条件去前缀会把它吃掉一个字符,
+/// 覆盖导入时就成了「静默改写用户密码」。
+///
+/// 代价说清楚:如果一个文件既带 BOM、表头又和我们的完全一致,就会被当成自家文件去前缀。
+/// 这种文件实际上就是我们的格式家族(本程序、以及本程序导出后用 Excel「CSV UTF-8」另存的),
+/// 对它们去前缀是必需的 —— 否则 Excel 往返一次就会多出单引号。
+fn is_own_export(text: &str, raw_header: &[String]) -> bool {
+    if !text.starts_with('\u{feff}') {
+        return false;
+    }
+    let has_password = raw_header
+        .iter()
+        .any(|h| field_from_key(h) == Some(Field::Password));
+    let expected: Vec<&str> = CSV_HEADER
+        .iter()
+        .copied()
+        .filter(|column| has_password || *column != "Password")
+        .collect();
+
+    raw_header.len() == expected.len()
+        && raw_header
+            .iter()
+            .zip(expected)
+            .all(|(got, want)| normalize_key(got) == normalize_key(want))
+}
+
+fn entry_from_row(header: &[Option<Field>], record: &[String], unguard: bool) -> Entry {
     let mut entry = Entry::default();
     let mut tags: Vec<String> = Vec::new();
 
     for (index, field) in header.iter().enumerate() {
         let Some(field) = field else { continue };
         let raw = record.get(index).map(String::as_str).unwrap_or("");
-        let value = unguard_formula(raw);
+        // 只有自家导出的文件才去前缀:第三方文件里的单引号是数据本身。
+        let value = if unguard {
+            unguard_formula(raw)
+        } else {
+            raw.to_string()
+        };
         match field {
             Field::Id => entry.id = value.trim().to_string(),
             Field::Title => entry.title = value,
@@ -804,6 +843,52 @@ mod tests {
         }
     }
 
+    /// 第三方 CSV 里的单引号是数据本身,不能被当成我们的防护前缀吃掉。
+    /// (实测过:无条件去前缀会把 `'=x` 变成 `=x`、`''e` 变成 `'e` —— 静默改写密码。)
+    #[test]
+    fn foreign_csv_keeps_leading_apostrophes() {
+        let text = "name,url,username,password,note\n\
+                    A,https://a.example,alice,'=x,\n\
+                    B,https://b.example,bob,''e,\n\
+                    C,https://c.example,carol,'-abc,\n\
+                    D,https://d.example,dave,'@home,\n";
+        let parsed = parse_csv(text).unwrap();
+        let passwords: Vec<&str> = parsed.iter().map(|e| e.password.as_str()).collect();
+        assert_eq!(passwords, vec!["'=x", "''e", "'-abc", "'@home"]);
+    }
+
+    /// 判据要求「带 BOM + 表头就是我们的那几列」。手搓一份同样表头但不带 BOM 的文件,
+    /// 里面的单引号按数据保留;同一份内容带上 BOM(即本程序导出的形态)才还原前缀。
+    #[test]
+    fn only_own_export_gets_unguarded() {
+        let text = "Title,Username,Password,Url,Category,Tags,Notes\r\n\
+                    T,u,'=keep,https://x.example,工作,,\r\n";
+        let foreign = parse_csv(text).unwrap();
+        assert_eq!(foreign[0].password.as_str(), "'=keep", "无 BOM 不算自家文件");
+        assert_eq!(foreign[0].username, "u");
+
+        let own = parse_csv(&format!("\u{feff}{text}")).unwrap();
+        assert_eq!(own[0].password.as_str(), "=keep", "自家文件要还原前缀");
+    }
+
+    /// `parse()` 不能先把 BOM 吃掉再交给 CSV 解析器 —— 那会把自家导出当外人,
+    /// 于是 Excel 往返一次就多出一堆单引号。
+    #[test]
+    fn parse_keeps_the_bom_for_the_own_export_check() {
+        let mut document = Document::default();
+        document.entries.push(Entry {
+            title: "表单里手输的".into(),
+            username: "'=user".into(),
+            password: Zeroizing::new("'=pw".into()),
+            ..Default::default()
+        });
+
+        let text = export_csv(&document, ExportOptions::default());
+        let via_parse = parse(&text, None).unwrap();
+        assert_eq!(via_parse[0].username, "'=user");
+        assert_eq!(via_parse[0].password.as_str(), "'=pw");
+    }
+
     /// 各种「会破坏 CSV 结构」的取值必须原样往返。
     #[test]
     fn csv_survives_nasty_fields() {
@@ -956,6 +1041,19 @@ mod tests {
         assert_eq!(parsed[0].category, "工作");
         assert_eq!(parsed[0].title, "条目");
         assert_eq!(parsed[0].username, "u");
+        assert!(parsed[0].favorite, "Bitwarden 的 favorite 列");
+
+        // LastPass 的列名与别家都不一样,收藏列叫 `fav`(README 点名支持它)。
+        let lastpass = "url,username,password,extra,name,grouping,fav\n\
+                        https://l.example,me,pw,note,条目,工作,1\n";
+        let parsed = parse_csv(lastpass).unwrap();
+        assert_eq!(parsed[0].url, "https://l.example");
+        assert_eq!(parsed[0].username, "me");
+        assert_eq!(parsed[0].password.as_str(), "pw");
+        assert_eq!(parsed[0].notes, "note");
+        assert_eq!(parsed[0].title, "条目");
+        assert_eq!(parsed[0].category, "工作");
+        assert!(parsed[0].favorite, "LastPass 的 fav 列");
     }
 
     #[test]
