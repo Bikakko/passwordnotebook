@@ -81,6 +81,26 @@ pub fn run() -> i32 {
         if crate::paths::vault_exists() { "是" } else { "否" }
     );
 
+    println!("-- 运行环境(环境变量异常会让下面的检查整片失败)--");
+    println!("  当前目录 = {}", std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default());
+    for name in ["USERNAME", "TEMP", "TMP", "LOCALAPPDATA", "USERPROFILE"] {
+        println!(
+            "  {name:<12} = {}",
+            std::env::var(name).unwrap_or_else(|_| "(未设置)".to_string())
+        );
+    }
+    println!("  temp_dir() = {}", std::env::temp_dir().display());
+
+    // 直接往三个关键目录各写一次。免密缓存与临时文件都要落在这些地方,
+    // 「写不进去」是最容易被误判成代码 bug 的一类环境问题。
+    write_probe("程序目录", crate::paths::data_dir());
+    write_probe("TEMP", &std::env::temp_dir());
+    if let Some(path) = super::dpapi::cache_path() {
+        if let Some(dir) = path.parent() {
+            write_probe("免密缓存目录", dir);
+        }
+    }
+
     println!("-- 控制台诊断(中文乱码时看这里)--");
     match super::console_info() {
         Some(info) => {
@@ -278,11 +298,84 @@ pub fn run() -> i32 {
     if failures == 0 { 0 } else { 1 }
 }
 
+/// 找一个**确实可写**的自检临时目录。
+///
+/// 不能直接信 `std::env::temp_dir()`:从 WSL 或某些宿主启动时,`TEMP`/`TMP`
+/// 可能是 Unix 风格路径或 UNC 路径,`create_dir_all` 直接失败,于是后面几十项
+/// 检查全部跟着「失败」,真正的结论被淹掉(第一次真机自检就踩了这个坑)。
+///
+/// 因此优先用程序目录下的子目录 —— 它由 exe 位置推导,并且
+/// [`crate::paths::data_dir`] 已经探测过可写性;`%TEMP%` 只作为备选。
+fn scratch_dir() -> Option<std::path::PathBuf> {
+    let candidates = [
+        crate::paths::data_dir().join("selftest-tmp"),
+        std::env::temp_dir().join(format!("pnb-selftest-{}", std::process::id())),
+    ];
+
+    for dir in candidates {
+        if std::fs::create_dir_all(&dir).is_err() {
+            continue;
+        }
+        // 目录存在不等于可写:真的写一个文件试一下。
+        let probe = dir.join("write-probe.tmp");
+        if std::fs::write(&probe, b"ok").is_err() {
+            continue;
+        }
+        let _ = std::fs::remove_file(&probe);
+        return Some(dir);
+    }
+    None
+}
+
+/// 往某个目录写一个探针文件,把结果原样打出来。
+///
+/// 「写不进去」这类环境问题,**测量**永远比猜测快:真机自检里
+/// 「免密缓存写不进去」查了好几轮,靠的就是这一行输出。
+fn write_probe(name: &str, dir: &std::path::Path) {
+    let probe = dir.join("pnb-write-probe.tmp");
+    match std::fs::write(&probe, b"ok") {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&probe);
+            println!("  {name:<12} = 可写");
+        }
+        Err(e) => println!("  {name:<12} = 不可写:{e}"),
+    }
+}
+
+/// 免密缓存目录(`%LOCALAPPDATA%\PasswordNotebook`)是否可用。
+///
+/// 不可用时打印 SKIP 并让调用方跳过相关检查 —— 那种失败与代码无关,
+/// 报成 FAIL 只会误导。
+fn dpapi_dir_usable() -> bool {
+    let Some(path) = super::dpapi::cache_path() else {
+        println!("  SKIP  取不到 %LOCALAPPDATA%,跳过免密缓存检查");
+        return false;
+    };
+    let Some(dir) = path.parent() else {
+        println!("  SKIP  免密缓存路径异常,跳过检查");
+        return false;
+    };
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        println!("  SKIP  免密缓存目录不可用:{} ({e})", dir.display());
+        return false;
+    }
+    true
+}
+
 fn core_checks() -> usize {
     let mut failures = 0usize;
 
-    let dir = std::env::temp_dir().join(format!("pnb-selftest-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
+    let Some(dir) = scratch_dir() else {
+        println!("  FAIL  找不到可写的临时目录,后续检查无法进行");
+        println!(
+            "        TEMP={:?} TMP={:?}",
+            std::env::var("TEMP"),
+            std::env::var("TMP")
+        );
+        return 1;
+    };
+    println!("  临时目录 = {}", dir.display());
+
     let path = dir.join("vault.pkk");
     let _ = std::fs::remove_file(&path);
 
@@ -317,9 +410,14 @@ fn core_checks() -> usize {
 
     check!("文件可被识别为密码本", VaultFile::looks_like_vault(&path));
     check!("正确登录密码可解锁", VaultService::new().open(&path, PWD).is_ok());
+    // 注意断言的是「密码错」而不是「任意错误」:库文件不存在时也返回 Err,
+    // 那种写法会在库根本没建起来的场景下谎报 PASS。
     check!(
         "错误登录密码被拒绝",
-        VaultService::new().open(&path, "wrong-password").is_err()
+        matches!(
+            VaultService::new().open(&path, "wrong-password"),
+            Err(crate::error::VaultError::WrongSecret(_))
+        )
     );
 
     let mut unlocked = VaultService::new();
@@ -384,7 +482,10 @@ fn core_checks() -> usize {
     }
     check!(
         "旧登录密码已失效",
-        VaultService::new().open(&path, PWD).is_err()
+        matches!(
+            VaultService::new().open(&path, PWD),
+            Err(crate::error::VaultError::WrongSecret(_))
+        )
     );
 
     if recovery.is_empty() {
@@ -439,7 +540,8 @@ fn core_checks() -> usize {
                     && csv_reparsed[0].password.as_str() == "p,w\"d"
             );
         } else {
-            check!("CSV / JSON 导出", false);
+            // 上游没建起来就别说「导出失败」——那是两回事。
+            println!("  SKIP  CSV / JSON 导出(上游「打开密码本」未通过)");
         }
 
         let mut target = VaultService::new();
@@ -466,25 +568,32 @@ fn core_checks() -> usize {
                 target.backup_file().is_ok_and(|p| p.is_file())
             );
         } else {
-            check!("导入到新密码本", false);
+            println!("  SKIP  导入到新密码本(临时目录不可用或创建失败)");
         }
 
-        let _ = std::fs::write(
+        let chrome_written = std::fs::write(
             &chrome_path,
             "name,url,username,password,note\n示例,https://e.example,u,p,n\n",
-        );
+        )
+        .is_ok();
         check!(
             "可识别 Chrome 导出的表头",
-            export_import::import_from_path(&chrome_path)
-                .map(|v| v.len() == 1 && v[0].title == "示例" && v[0].url == "https://e.example")
-                .unwrap_or(false)
+            chrome_written
+                && export_import::import_from_path(&chrome_path)
+                    .map(|v| v.len() == 1 && v[0].title == "示例" && v[0].url == "https://e.example")
+                    .unwrap_or(false)
         );
 
         // 中文 Windows 上 Excel 默认另存为 GBK,必须明确报错而不是导入乱码。
-        let _ = std::fs::write(&gbk_path, [0xB1, 0xED, 0xCC, 0xE2, 0x0A]);
+        let gbk_written = std::fs::write(&gbk_path, [0xB1, 0xED, 0xCC, 0xE2, 0x0A]).is_ok();
+        // 断言错误信息里点明了编码问题:只判断 is_err 的话,「文件根本不存在」
+        // 也会算通过,那是个假阳性。
+        let gbk_explained = export_import::import_from_path(&gbk_path)
+            .err()
+            .is_some_and(|e| e.to_string().contains("UTF-8"));
         check!(
             "非 UTF-8 文件被明确拒绝",
-            export_import::import_from_path(&gbk_path).is_err()
+            gbk_written && gbk_explained
         );
     }
 
@@ -500,44 +609,57 @@ fn core_checks() -> usize {
         );
     }
 
-    // DPAPI 本机免密缓存
-    super::dpapi::clear();
-    let vault_id = [9u8; 16];
-    super::dpapi::store(vault_id, 3, &[7u8; 32], true);
-    let loaded = super::dpapi::load(vault_id, 3);
-    check!(
-        "DPAPI 缓存可写入并读回",
-        loaded
-            .as_ref()
-            .is_some_and(|(d, h, _)| d[..] == [7u8; 32][..] && *h)
-    );
-    check!(
-        "KeyGeneration 不匹配时缓存失效",
-        super::dpapi::load(vault_id, 4).is_none()
-    );
-    super::dpapi::clear();
-    check!("清除后缓存不存在", !super::dpapi::exists());
-
-    // 回归:历史上长度恰为 25..=28 字节的残缺缓存会越过长度校验、越界 panic。
-    // 构造「头匹配但长度字段缺失」的文件,必须优雅拒绝。
-    if let Some(p) = super::dpapi::cache_path() {
-        if let Some(dir) = p.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let mut truncated_rejected = true;
-        for len in 25usize..=28 {
-            let mut buf = Vec::new();
-            buf.extend_from_slice(b"PNBQ");
-            buf.extend_from_slice(&vault_id);
-            buf.extend_from_slice(&3u32.to_le_bytes());
-            buf.resize(len, 0);
-            let _ = std::fs::write(&p, &buf);
-            if super::dpapi::load(vault_id, 3).is_some() {
-                truncated_rejected = false;
-            }
-        }
-        check!("残缺缓存(25..=28B)被拒绝而非 panic", truncated_rejected);
+    // DPAPI 本机免密缓存。目录取不到或不可写时整块跳过:那种失败与代码无关,
+    // 报成 FAIL 只会把真正的问题淹掉(第一次真机自检就吃过这个亏)。
+    if dpapi_dir_usable() {
         super::dpapi::clear();
+        let vault_id = [9u8; 16];
+        if let Err(e) = super::dpapi::store(vault_id, 3, &[7u8; 32], true) {
+            println!("        store 失败:{e}");
+        }
+        if let Some(p) = super::dpapi::cache_path() {
+            println!(
+                "        缓存文件:{} 存在={} 大小={:?}",
+                p.display(),
+                p.exists(),
+                std::fs::metadata(&p).map(|m| m.len()).ok()
+            );
+        }
+        let loaded = super::dpapi::load(vault_id, 3);
+        check!(
+            "DPAPI 缓存可写入并读回",
+            loaded
+                .as_ref()
+                .is_some_and(|(d, h, _)| d[..] == [7u8; 32][..] && *h)
+        );
+        check!(
+            "KeyGeneration 不匹配时缓存失效",
+            super::dpapi::load(vault_id, 4).is_none()
+        );
+        super::dpapi::clear();
+        check!("清除后缓存不存在", !super::dpapi::exists());
+
+        // 回归:历史上长度恰为 25..=28 字节的残缺缓存会越过长度校验、越界 panic。
+        // 构造「头匹配但长度字段缺失」的文件,必须优雅拒绝。
+        if let Some(p) = super::dpapi::cache_path() {
+            if let Some(cache_dir) = p.parent() {
+                let _ = std::fs::create_dir_all(cache_dir);
+            }
+            let mut truncated_rejected = true;
+            for len in 25usize..=28 {
+                let mut buf = Vec::new();
+                buf.extend_from_slice(b"PNBQ");
+                buf.extend_from_slice(&vault_id);
+                buf.extend_from_slice(&3u32.to_le_bytes());
+                buf.resize(len, 0);
+                let _ = std::fs::write(&p, &buf);
+                if super::dpapi::load(vault_id, 3).is_some() {
+                    truncated_rejected = false;
+                }
+            }
+            check!("残缺缓存(25..=28B)被拒绝而非 panic", truncated_rejected);
+            super::dpapi::clear();
+        }
     }
 
     // 剪贴板

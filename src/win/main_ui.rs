@@ -1691,7 +1691,9 @@ fn after_unlock(hwnd: HWND) {
         let vault = &app::state().vault;
         if let Some((id, generation, dek)) = vault.quick_unlock_material() {
             if settings.quick_unlock_enabled {
-                dpapi::store(id, generation, &dek, settings.require_windows_hello);
+                // 失败不在这里打扰用户(解锁流程刚走完),但设置界面会如实显示
+                // 「免密缓存当前不可用」,不会让人以为它开着。
+                let _ = dpapi::store(id, generation, &dek, settings.require_windows_hello);
             } else {
                 dpapi::clear();
             }

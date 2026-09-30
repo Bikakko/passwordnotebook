@@ -248,8 +248,29 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     );
 
     on_quick_changed(hwnd);
+    show_cache_state(hwnd);
     // on_quick_changed 会重新 st(hwnd),不能复用上面那把引用。
     ui::set_focus(st(hwnd).quick);
+}
+
+/// 免密缓存当前是否真的可用。
+///
+/// 「设置里勾着」不等于「缓存写得进去」:目录被安全策略拒绝、磁盘满、
+/// 账户配置异常都会让写入失败。用户勾了却永远不生效、界面还一声不吭,
+/// 是在骗人 —— 打开设置时就把实情摆出来。
+fn show_cache_state(hwnd: HWND) {
+    if !app::state().settings.quick_unlock_enabled {
+        return;
+    }
+    let Some((id, generation, _)) = app::state().vault.quick_unlock_material() else {
+        return;
+    };
+    if dpapi::load(id, generation).is_none() {
+        ui::set_text(
+            st(hwnd).error,
+            "提示:本机免密缓存当前不可用,下次启动仍需输入登录密码(点「保存」可重试写入)。",
+        );
+    }
 }
 
 fn on_command(hwnd: HWND, id: usize, code: u16) {
@@ -296,15 +317,40 @@ fn save(hwnd: HWND) {
     app::state().settings = updated.clone();
 
     // 让免密缓存的「是否允许 / 是否要求 Hello」立即生效。
+    //
+    // 写入失败必须说出来:缓存没落地却显示「已开启」,下次启动用户会发现
+    // 免密解锁根本没生效,而界面从未提过一个字。失败时**不关闭**对话框,
+    // 让用户看到原因,自己决定是留着还是关掉这个开关。
+    let mut cache_error = None;
     if updated.quick_unlock_enabled {
         if let Some((id, generation, dek)) = app::state().vault.quick_unlock_material() {
-            dpapi::store(id, generation, &dek, updated.require_windows_hello);
+            if let Err(e) = dpapi::store(id, generation, &dek, updated.require_windows_hello) {
+                cache_error = Some(e);
+            }
         }
     } else {
         dpapi::clear();
     }
 
+    if let Some(e) = cache_error {
+        ui::set_text(
+            st(hwnd).error,
+            &format!("设置已保存,但本机免密缓存写入失败,下次仍需输入登录密码:{e}"),
+        );
+        return;
+    }
+
     ui::destroy_window(hwnd);
+}
+
+/// 按当前设置重写一次免密缓存;失败返回原因,成功或未启用返回 `None`。
+fn refresh_cache() -> Option<String> {
+    if !app::state().settings.quick_unlock_enabled {
+        return None;
+    }
+    let (id, generation, dek) = app::state().vault.quick_unlock_material()?;
+    let require_hello = app::state().settings.require_windows_hello;
+    dpapi::store(id, generation, &dek, require_hello).err()
 }
 
 fn change_password(hwnd: HWND) {
@@ -331,18 +377,19 @@ fn change_password(hwnd: HWND) {
 
     match app::state().vault.change_master_password(&current, &new) {
         Ok(()) => {
-            let settings = app::state().settings.clone();
-            if let Some((id, generation, dek)) = app::state().vault.quick_unlock_material() {
-                if settings.quick_unlock_enabled {
-                    dpapi::store(id, generation, &dek, settings.require_windows_hello);
-                }
-            }
+            // 改密会让旧缓存作废,这里用新密钥重写一份;写失败也要说。
+            let cache_warning = refresh_cache();
             let s = st(hwnd);
             ui::set_text(s.current_pw, "");
             ui::set_text(s.new_pw, "");
             ui::set_text(s.confirm_pw, "");
             ui::set_text(s.error, "登录密码已修改。");
-            ui::info(hwnd, "登录密码已修改。", "完成");
+
+            let message = match cache_warning {
+                Some(e) => format!("登录密码已修改。\n\n但本机免密缓存写入失败,下次仍需输入登录密码:{e}"),
+                None => "登录密码已修改。".to_string(),
+            };
+            ui::info(hwnd, &message, "完成");
         }
         Err(e) => ui::set_text(st(hwnd).error, &e.to_string()),
     }
@@ -359,13 +406,12 @@ fn regenerate_recovery(hwnd: HWND) {
 
     match app::state().vault.regenerate_recovery_code() {
         Ok(code) => {
-            let settings = app::state().settings.clone();
-            if let Some((id, generation, dek)) = app::state().vault.quick_unlock_material() {
-                if settings.quick_unlock_enabled {
-                    dpapi::store(id, generation, &dek, settings.require_windows_hello);
-                }
-            }
-            ui::set_text(st(hwnd).error, "");
+            let cache_warning = refresh_cache();
+            let status = match cache_warning {
+                Some(e) => format!("恢复码已更新,但本机免密缓存写入失败:{e}"),
+                None => String::new(),
+            };
+            ui::set_text(st(hwnd).error, &status);
             dlg_recovery::show_code(hwnd, &code, false);
         }
         Err(e) => ui::set_text(st(hwnd).error, &format!("生成失败:{e}")),

@@ -68,13 +68,22 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     result
 }
 
-/// 写入缓存(失败时静默忽略,不影响正常使用)。
-pub fn store(vault_id: [u8; 16], key_generation: u32, dek: &[u8], require_hello: bool) {
-    let Some(path) = cache_path() else { return };
-    let Ok(protected) = protect(dek) else { return };
+/// 写入缓存。
+///
+/// 返回失败原因:调用处通常忽略(免密解锁失败不影响密码本本身),
+/// 但**不能把错误吞在函数内部** —— 自检里一处「DPAPI 缓存写不进去」
+/// 就是这样查了很久才定位到环境问题的。
+pub fn store(
+    vault_id: [u8; 16],
+    key_generation: u32,
+    dek: &[u8],
+    require_hello: bool,
+) -> Result<(), String> {
+    let path = cache_path().ok_or_else(|| "取不到 %LOCALAPPDATA%".to_string())?;
+    let protected = protect(dek)?;
 
     if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        std::fs::create_dir_all(dir).map_err(|e| format!("创建目录 {} 失败:{e}", dir.display()))?;
     }
 
     let mut out = Vec::with_capacity(25 + protected.len());
@@ -85,7 +94,7 @@ pub fn store(vault_id: [u8; 16], key_generation: u32, dek: &[u8], require_hello:
     out.extend_from_slice(&(protected.len() as u32).to_le_bytes());
     out.extend_from_slice(&protected);
 
-    let _ = write_atomic(&path, &out);
+    write_atomic(&path, &out).map_err(|e| format!("写入 {} 失败:{e}", path.display()))
 }
 
 /// 读取缓存;vault_id / key_generation 不匹配或解密失败时返回 None。
