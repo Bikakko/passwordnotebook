@@ -2,12 +2,14 @@
 //!
 //! 数据密钥(DEK)只存在于内存中,`lock()` 或进程退出后即不可恢复。
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use zeroize::Zeroizing;
 
 use crate::crypto::{self, KEY_LEN};
 use crate::error::{Result, VaultError};
+use crate::export_import::{DuplicateStrategy, ImportOutcome, dedupe_key, is_blank_entry};
 use crate::header::VaultHeader;
 use crate::model::{now_secs, Document, Entry};
 use crate::recovery;
@@ -524,6 +526,117 @@ impl VaultService {
         self.save()
     }
 
+    // ---------- 导入 / 导出 ----------
+
+    /// 把当前库文件原样复制一份到旁边(默认为 `data.pkk.bak`)。
+    ///
+    /// 给导入这类会成批改写数据的操作留退路。副本仍是加密的,不额外泄露任何信息;
+    /// 需要回滚时手工用它覆盖回 `data.pkk` 即可。
+    pub fn backup_file(&self) -> Result<PathBuf> {
+        let path = self.path.clone().ok_or(VaultError::Locked)?;
+        let backup = path.with_extension(format!("{}.bak", crate::paths::VAULT_EXTENSION));
+        std::fs::copy(&path, &backup)?;
+        Ok(backup)
+    }
+
+    /// 批量导入条目(单次落盘,不存在「导一半」的中间状态)。
+    ///
+    /// 去重按「标题 + 用户名」(忽略大小写与首尾空白);两者都为空时退化为网址。
+    /// 覆盖策略下,导入项的密码为空表示**保留原密码** —— 一份不含密码的导出文件
+    /// 不应该把库里已有的密码清掉。
+    ///
+    /// 无论文件里写的是什么 id,导入时一律分配新 id:否则来自同一个库的备份
+    /// 会与库内条目撞 id,后续的编辑与彻底删除都会作用到错误的对象上。
+    pub fn import_entries(
+        &mut self,
+        incoming: Vec<Entry>,
+        strategy: DuplicateStrategy,
+    ) -> Result<ImportOutcome> {
+        let mut outcome = ImportOutcome::default();
+        let now = now_secs();
+
+        {
+            let document = self.document.as_mut().ok_or(VaultError::Locked)?;
+
+            // 先给已有条目建一次索引,避免每条导入项都线性扫一遍全库 ——
+            // 导入几千行 CSV 时,这是 O(n) 与 O(n²) 的差别。
+            // `or_insert` 保留第一条同名条目,与「取第一个匹配项」的语义一致。
+            let mut index: HashMap<String, usize> = HashMap::new();
+            for (position, existing) in document.entries.iter().enumerate() {
+                if existing.is_deleted() {
+                    continue;
+                }
+                if let Some(key) = dedupe_key(existing) {
+                    index.entry(key).or_insert(position);
+                }
+            }
+
+            for mut entry in incoming {
+                if is_blank_entry(&entry) {
+                    continue;
+                }
+                entry.deleted = None;
+
+                let key = dedupe_key(&entry);
+                let existing = match (strategy, &key) {
+                    (DuplicateStrategy::Append, _) | (_, None) => None,
+                    (_, Some(key)) => index.get(key).copied(),
+                };
+
+                let category = entry.category.clone();
+                let tags = entry.tags.clone();
+
+                match existing {
+                    Some(_) if strategy == DuplicateStrategy::Skip => {
+                        outcome.skipped += 1;
+                        continue;
+                    }
+                    Some(position) => {
+                        let target = &mut document.entries[position];
+                        target.title = entry.title;
+                        target.username = entry.username;
+                        if !entry.password.is_empty() {
+                            target.password = entry.password;
+                        }
+                        target.url = entry.url;
+                        target.category = entry.category;
+                        target.tags = entry.tags;
+                        target.notes = entry.notes;
+                        target.updated = now;
+                        outcome.updated += 1;
+                    }
+                    None => {
+                        entry.id = Entry::new_id()?;
+                        entry.created = if entry.created > 0 { entry.created } else { now };
+                        entry.updated = if entry.updated > 0 {
+                            entry.updated
+                        } else {
+                            entry.created
+                        };
+
+                        let position = document.entries.len();
+                        document.entries.push(entry);
+                        // 同一份文件里的后续重复行也要能匹配上这一条。
+                        if let Some(key) = key {
+                            index.entry(key).or_insert(position);
+                        }
+                        outcome.added += 1;
+                    }
+                }
+
+                ensure_category(document, &category);
+                for tag in &tags {
+                    ensure_tag(document, tag);
+                }
+            }
+        }
+
+        if outcome.changed() {
+            self.save()?;
+        }
+        Ok(outcome)
+    }
+
     // ---------- 分类与标签(先建后用)----------
 
     pub fn add_category(&mut self, name: &str) -> Result<()> {
@@ -670,6 +783,17 @@ fn ensure_category(document: &mut Document, category: &str) {
     }
     if !document.categories.iter().any(|c| c == category) {
         document.categories.push(category.to_string());
+    }
+}
+
+/// 与 `add_tag` 保持一致:重名判断忽略大小写。
+fn ensure_tag(document: &mut Document, tag: &str) {
+    let tag = tag.trim();
+    if tag.is_empty() {
+        return;
+    }
+    if !document.tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
+        document.tags.push(tag.to_string());
     }
 }
 

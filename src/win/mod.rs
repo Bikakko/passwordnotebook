@@ -22,6 +22,7 @@ mod dlg_input;
 mod dlg_recovery;
 mod dlg_settings;
 mod dlg_taxonomy;
+mod dlg_transfer;
 mod main_ui;
 mod main_window;
 mod selftest;
@@ -83,6 +84,10 @@ pub fn run() -> i32 {
 
     if selftest::preview_recovery_requested() {
         return selftest::preview_recovery();
+    }
+
+    if selftest::preview_transfer_requested() {
+        return selftest::preview_transfer();
     }
 
     // 单实例:第二次启动时把已有窗口拉到前台,避免两个进程同时占着密码本文件。

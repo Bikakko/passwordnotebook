@@ -295,6 +295,96 @@ fn core_checks() -> usize {
         );
     }
 
+    // 导入 / 导出:导出 → 重新解析 → 导入到另一个库,字段必须一一对上。
+    {
+        use crate::export_import::{self, DuplicateStrategy, ExportOptions, Format};
+
+        let csv_path = dir.join("selftest-export.csv");
+        let json_path = dir.join("selftest-export.json");
+        let target_path = dir.join("selftest-import.pkk");
+        let chrome_path = dir.join("selftest-chrome.csv");
+        let gbk_path = dir.join("selftest-gbk.csv");
+
+        let mut source = VaultService::new();
+        if source.open(&path, NEW_PWD).is_ok() {
+            let item = Entry {
+                title: "导出用,含逗号".into(),
+                username: "user".into(),
+                password: zeroize::Zeroizing::new("p,w\"d".to_string()),
+                notes: "第一行\n第二行".into(),
+                category: "自检".into(),
+                tags: vec!["标签A".into()],
+                ..Default::default()
+            };
+            let _ = source.add_entry(item);
+
+            let exported = source.document().map(|doc| {
+                (
+                    export_import::export_to_path(doc, &csv_path, Format::Csv, ExportOptions::default())
+                        .is_ok(),
+                    export_import::export_to_path(doc, &json_path, Format::Json, ExportOptions::default())
+                        .is_ok(),
+                )
+            });
+
+            let csv_reparsed = export_import::import_from_path(&csv_path).unwrap_or_default();
+            check!(
+                "CSV 导出带 BOM 且能被自己重新解析",
+                exported == Some((true, true))
+                    && csv_reparsed.len() == 1
+                    && csv_reparsed[0].title == "导出用,含逗号"
+                    && csv_reparsed[0].password.as_str() == "p,w\"d"
+            );
+        } else {
+            check!("CSV / JSON 导出", false);
+        }
+
+        let mut target = VaultService::new();
+        let target_ready = VaultService::create_new_with_params(&target_path, PWD, M, T, P).is_ok()
+            && target.open(&target_path, PWD).is_ok();
+
+        if target_ready {
+            let first = export_import::import_from_path(&json_path)
+                .map(|entries| target.import_entries(entries, DuplicateStrategy::Skip));
+            check!(
+                "JSON 备份可导入到另一个密码本",
+                matches!(first, Ok(Ok(outcome)) if outcome.added == 1)
+            );
+
+            let second = export_import::import_from_path(&json_path)
+                .map(|entries| target.import_entries(entries, DuplicateStrategy::Skip));
+            check!(
+                "同一份备份重复导入会被跳过(幂等)",
+                matches!(second, Ok(Ok(outcome)) if outcome.skipped == 1 && !outcome.changed())
+            );
+
+            check!(
+                "导入前可生成 data.pkk.bak 备份",
+                target.backup_file().is_ok_and(|p| p.is_file())
+            );
+        } else {
+            check!("导入到新密码本", false);
+        }
+
+        let _ = std::fs::write(
+            &chrome_path,
+            "name,url,username,password,note\n示例,https://e.example,u,p,n\n",
+        );
+        check!(
+            "可识别 Chrome 导出的表头",
+            export_import::import_from_path(&chrome_path)
+                .map(|v| v.len() == 1 && v[0].title == "示例" && v[0].url == "https://e.example")
+                .unwrap_or(false)
+        );
+
+        // 中文 Windows 上 Excel 默认另存为 GBK,必须明确报错而不是导入乱码。
+        let _ = std::fs::write(&gbk_path, [0xB1, 0xED, 0xCC, 0xE2, 0x0A]);
+        check!(
+            "非 UTF-8 文件被明确拒绝",
+            export_import::import_from_path(&gbk_path).is_err()
+        );
+    }
+
     // 篡改检测
     if let Ok(mut bytes) = std::fs::read(&path) {
         let last = bytes.len() - 1;
@@ -662,6 +752,51 @@ pub fn preview_recovery() -> i32 {
     let host = ui::create_window("PnbPreviewHost", "", WS_OVERLAPPED, 0, HWND::default(), 0, 0, 0, 200, 200);
 
     super::dlg_recovery::show_code(host, "ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567", true);
+
+    ui::destroy_window(host);
+    0
+}
+
+pub fn preview_transfer_requested() -> bool {
+    std::env::args().any(|a| a == "--ui-preview-transfer")
+}
+
+/// 只显示「导入 / 导出」对话框,用来肉眼检查布局(不需要打开数据库)。
+///
+/// 预览时库是锁着的,点按钮只会提示未解锁 —— 这里看的是排版与文案。
+pub fn preview_transfer() -> i32 {
+    use super::app;
+    use super::sys::*;
+    use super::ui;
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::DefWindowProcW;
+
+    unsafe extern "system" fn host_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+    }
+
+    let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForSystem() }.max(96);
+    app::set(app::AppState {
+        settings: Default::default(),
+        vault: crate::vault::VaultService::new(),
+        font: Default::default(),
+        font_bold: Default::default(),
+        dpi,
+        main: HWND::default(),
+        mode: app::Mode::Unlocked,
+    });
+
+    app::state().font = ui::create_ui_font(false, dpi);
+
+    let _ = ui::register_class("PnbPreviewHost", host_proc);
+    let host = ui::create_window("PnbPreviewHost", "", WS_OVERLAPPED, 0, HWND::default(), 0, 0, 0, 200, 200);
+
+    super::dlg_transfer::show(host);
 
     ui::destroy_window(host);
     0

@@ -21,7 +21,7 @@ use super::timefmt;
 use super::ui;
 use super::{
     clipboard, dialog, dlg_editor, dlg_generator, dlg_input, dlg_recovery, dlg_settings, dlg_taxonomy,
-    dpapi, hello, idle,
+    dlg_transfer, dpapi, hello, idle,
 };
 
 /// 列表行高度(基准 96 DPI 下的高度;系统原本约为 24px,增加 20%~25% 至 30px,
@@ -100,6 +100,8 @@ const ID_LIST: usize = 2213;
 const ID_SORT_COMBO: usize = 2217;
 const ID_STATUS: usize = 2218;
 const ID_TAXONOMY_BTN: usize = 2219;
+/// 导入 / 导出。
+const ID_TRANSFER_BTN: usize = 2220;
 
 const ID_BIN_TITLE: usize = 2301;
 const ID_BIN_HINT: usize = 2302;
@@ -153,6 +155,7 @@ pub struct MainUi {
     pub gen_btn: HWND,
     pub bin_btn: HWND,
     pub taxonomy_btn: HWND,
+    pub transfer_btn: HWND,
     pub settings_btn: HWND,
     pub lock_btn: HWND,
     pub search: HWND,
@@ -216,6 +219,7 @@ impl MainUi {
             gen_btn: zero,
             bin_btn: zero,
             taxonomy_btn: zero,
+            transfer_btn: zero,
             settings_btn: zero,
             lock_btn: zero,
             search: zero,
@@ -253,7 +257,7 @@ const ALL_CONTROL_IDS: &[usize] = &[
     ID_CREATE_TITLE, ID_CREATE_HINT, ID_CREATE_PATH_LABEL, ID_CREATE_PATH, ID_CREATE_PW_LABEL,
     ID_CREATE_PW, ID_CREATE_SHOW, ID_CREATE_PW2_LABEL, ID_CREATE_PW2, ID_CREATE_STRENGTH,
     ID_CREATE_BTN, ID_CREATE_ERROR,
-    ID_GEN_BTN, ID_BIN_BTN, ID_TAXONOMY_BTN,
+    ID_GEN_BTN, ID_BIN_BTN, ID_TAXONOMY_BTN, ID_TRANSFER_BTN,
     ID_SETTINGS_BTN, ID_LOCK_BTN,
     ID_SEARCH, ID_CAT_TABS, ID_TAG_LABEL, ID_TAG_LIST, ID_LIST, ID_SORT_COMBO,
     ID_STATUS,
@@ -396,6 +400,7 @@ pub fn on_create(hwnd: HWND, lparam: LPARAM) {
     s.gen_btn = button(hwnd, "生成密码", BS_PUSHBUTTON, ID_GEN_BTN);
     s.bin_btn = button(hwnd, "回收站", BS_PUSHBUTTON, ID_BIN_BTN);
     s.taxonomy_btn = button(hwnd, "分类标签", BS_PUSHBUTTON, ID_TAXONOMY_BTN);
+    s.transfer_btn = button(hwnd, "导入/导出", BS_PUSHBUTTON, ID_TRANSFER_BTN);
     s.settings_btn = button(hwnd, "设置", BS_PUSHBUTTON, ID_SETTINGS_BTN);
     s.lock_btn = button(hwnd, "锁定", BS_PUSHBUTTON, ID_LOCK_BTN);
     s.search = edit(hwnd, ES_AUTOHSCROLL, ID_SEARCH);
@@ -501,7 +506,7 @@ pub fn apply_mode(hwnd: HWND) {
         ui::set_visible(c, create);
     }
     for c in [
-        s.gen_btn, s.bin_btn, s.taxonomy_btn, s.settings_btn, s.lock_btn,
+        s.gen_btn, s.bin_btn, s.taxonomy_btn, s.transfer_btn, s.settings_btn, s.lock_btn,
         s.search, s.cat_tabs, s.tag_label, s.tag_list, s.list, s.sort_combo,
         s.status,
     ] {
@@ -615,7 +620,7 @@ fn layout_inner(hwnd: HWND) {
     let btn_h = scale(30);
     let gap = scale(6);
     let mut x = margin;
-    for b in [s.gen_btn, s.bin_btn, s.taxonomy_btn] {
+    for b in [s.gen_btn, s.bin_btn, s.taxonomy_btn, s.transfer_btn] {
         place(b, x, margin, btn_w, btn_h);
         x += btn_w + gap;
     }
@@ -1013,6 +1018,13 @@ pub fn on_command(hwnd: HWND, id: usize, code: u16) {
             dlg_taxonomy::show(hwnd);
             refresh_filters(hwnd);
             refresh_list(hwnd);
+        }
+        ID_TRANSFER_BTN if code == BN_CLICKED => {
+            // 只有真的改动过库(导入了东西)才刷新,避免一次纯导出也重排列表。
+            if dlg_transfer::show(hwnd) {
+                refresh_filters(hwnd);
+                refresh_list(hwnd);
+            }
         }
         ID_SETTINGS_BTN if code == BN_CLICKED => {
             dlg_settings::show(hwnd);
