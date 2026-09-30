@@ -236,22 +236,10 @@ impl VaultService {
 
     pub fn save(&mut self) -> Result<()> {
         let path = self.path.clone().ok_or(VaultError::Locked)?;
-
-        let document = self.document.as_ref().ok_or(VaultError::Locked)?;
-        let dek = self.dek.as_ref().ok_or(VaultError::Locked)?;
         let file = self.file.as_mut().ok_or(VaultError::Locked)?;
-
-        file.header.payload_nonce = crypto::random_array()?;
-        // 待加密的明文同样只活这一小会儿。
-        let plain = Zeroizing::new(serde_json::to_vec(document)?);
-        file.payload = crypto::seal(
-            dek,
-            &file.header.payload_nonce,
-            &plain,
-            &file.header.payload_aad(),
-        )?;
-
-        file.write_atomic(&path)
+        let dek = self.dek.as_ref().ok_or(VaultError::Locked)?;
+        let document = self.document.as_ref().ok_or(VaultError::Locked)?;
+        write_document(file, dek, &path, document)
     }
 
     /// 取出给本机免密缓存用的材料:(vault_id, key_generation, DEK 副本)。
@@ -548,16 +536,23 @@ impl VaultService {
     ///
     /// 无论文件里写的是什么 id,导入时一律分配新 id:否则来自同一个库的备份
     /// 会与库内条目撞 id,后续的编辑与彻底删除都会作用到错误的对象上。
+    ///
+    /// **在副本上导入,落盘成功后才提交到内存**(与改主密码那套「先算好再一次
+    /// 提交」一致)。直接在 `self.document` 上改的话,`save()` 一旦失败(磁盘满、
+    /// 杀软占住文件),磁盘没变而内存已经带上导入内容 —— 之后任意一次 `save()`
+    /// 都会把它静默写回磁盘,而界面上告诉用户的却是「导入失败,可以用备份回滚」;
+    /// 用户照着回滚,又会被下一次 `save()` 用内存态整份覆盖掉。
     pub fn import_entries(
         &mut self,
         incoming: Vec<Entry>,
         strategy: DuplicateStrategy,
     ) -> Result<ImportOutcome> {
+        let mut draft = self.document.as_ref().ok_or(VaultError::Locked)?.clone();
         let mut outcome = ImportOutcome::default();
         let now = now_secs();
 
         {
-            let document = self.document.as_mut().ok_or(VaultError::Locked)?;
+            let document = &mut draft;
 
             // 先给已有条目建一次索引,避免每条导入项都线性扫一遍全库 ——
             // 导入几千行 CSV 时,这是 O(n) 与 O(n²) 的差别。
@@ -637,8 +632,15 @@ impl VaultService {
         }
 
         if outcome.changed() {
-            self.save()?;
+            let path = self.path.clone().ok_or(VaultError::Locked)?;
+            let file = self.file.as_mut().ok_or(VaultError::Locked)?;
+            let dek = self.dek.as_ref().ok_or(VaultError::Locked)?;
+            write_document(file, dek, &path, &draft)?;
         }
+
+        // 到这里磁盘上要么已经是新内容,要么本来就没有变化 —— 才动内存。
+        // 上面那句 `?` 提前返回时,`draft` 直接丢弃并清零,`self.document` 仍是导入前的状态。
+        self.document = Some(draft);
         Ok(outcome)
     }
 
@@ -796,6 +798,24 @@ impl VaultService {
         self.save()?;
         Ok(favorite)
     }
+}
+
+/// 用给定文档重建载荷并原子落盘。
+///
+/// **不碰 `VaultService::document`** —— 调用方负责在写盘成功之后才提交内存状态:
+/// 这样「内存超前于磁盘」这个中间态在批量操作里根本不存在(见 `import_entries`)。
+fn write_document(file: &mut VaultFile, dek: &[u8], path: &Path, document: &Document) -> Result<()> {
+    // 每次保存都换新的载荷随机数。
+    file.header.payload_nonce = crypto::random_array()?;
+    // 待加密的明文同样只活这一小会儿。
+    let plain = Zeroizing::new(serde_json::to_vec(document)?);
+    file.payload = crypto::seal(
+        dek,
+        &file.header.payload_nonce,
+        &plain,
+        &file.header.payload_aad(),
+    )?;
+    file.write_atomic(path)
 }
 
 fn ensure_category(document: &mut Document, category: &str) {

@@ -389,8 +389,11 @@ fn import_from_file(hwnd: HWND) {
             ui::info(hwnd, &summary, "导入完成");
         }
         Err(e) => {
+            // 导入是「写盘成功才提交内存」的:失败时磁盘上的库文件一个字都没变,
+            // 所以这里**不能**再教用户去改 .bak 覆盖 —— 程序还在运行时照着做,
+            // 会被下一次保存用内存态整份盖掉,反而更危险。
             let message = format!(
-                "{e}\n\n可用的回滚备份:{}\n把它改名为 data.pkk 覆盖回去即可。",
+                "{e}\n\n磁盘上的库文件没有被改动,不需要做任何回滚。\n导入前的备份仍保留在:{}",
                 backup.display()
             );
             ui::set_text(st(hwnd).status, &e.to_string());

@@ -255,6 +255,76 @@ fn overwrite_import_keeps_existing_favorites() {
 }
 
 #[test]
+fn failed_import_neither_touches_disk_nor_memory() {
+    let tmp = TempDir::new("import-save-fail");
+    let mut vault = tmp.vault_with("vault.pkk");
+    vault
+        .add_entry(plain_entry("Existing", "alice", "pw"))
+        .unwrap();
+    let path = vault.path().unwrap().to_path_buf();
+
+    // 把库文件换成一个同名目录:write_atomic 最后那步改名必然失败
+    // (Windows 的 MoveFileExW 与 POSIX 的 rename 都不允许用文件顶替目录)。
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+
+    let csv = "title,username,password\nImported,bob,pw2\n";
+    let incoming = export_import::parse(csv, Some(Format::Csv)).unwrap();
+    let err = vault
+        .import_entries(incoming, DuplicateStrategy::Append)
+        .unwrap_err();
+    assert!(!err.to_string().is_empty());
+
+    // 1) 内存必须保持导入前的样子 —— 不能留下「导入了一半」的状态。
+    assert_eq!(vault.entry_count(), 1, "导入失败后内存不该留下导入的条目");
+    assert_eq!(vault.active_entries().next().unwrap().title, "Existing");
+
+    // 2) 之后一次成功的保存,也不能把失败的导入顺带写出去。
+    std::fs::remove_dir(&path).unwrap();
+    vault.save().unwrap();
+
+    let mut reopened = VaultService::new();
+    reopened.open(&path, PASSWORD).unwrap();
+    assert_eq!(reopened.entry_count(), 1);
+    assert_eq!(reopened.active_entries().next().unwrap().title, "Existing");
+    assert_eq!(
+        reopened.active_entries().next().unwrap().password.as_str(),
+        "pw",
+        "原有条目不受影响"
+    );
+}
+
+#[test]
+fn failed_import_keeps_the_vault_openable_with_the_same_password() {
+    let tmp = TempDir::new("import-save-fail-header");
+    let mut vault = tmp.vault_with("vault.pkk");
+    vault.add_entry(plain_entry("A", "a", "1")).unwrap();
+    let path = vault.path().unwrap().to_path_buf();
+
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    let incoming = export_import::parse(
+        "title,username,password\nB,b,2\n",
+        Some(Format::Csv),
+    )
+    .unwrap();
+    assert!(
+        vault
+            .import_entries(incoming, DuplicateStrategy::Append)
+            .is_err()
+    );
+    assert_eq!(vault.entry_count(), 1);
+
+    // 失败的那次写盘只动了内存里的载荷与 nonce,文件头(密码槽)不能被改坏。
+    std::fs::remove_dir(&path).unwrap();
+    vault.save().unwrap();
+
+    let mut reopened = VaultService::new();
+    reopened.open(&path, PASSWORD).expect("同一主密码必须仍能打开");
+    assert_eq!(reopened.entry_count(), 1);
+}
+
+#[test]
 fn import_respects_timestamps_from_the_file() {
     let tmp = TempDir::new("timestamps");
     let mut vault = tmp.vault_with("vault.pkk");
