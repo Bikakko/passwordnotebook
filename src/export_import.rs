@@ -508,7 +508,9 @@ fn parse_timestamp(value: &str) -> i64 {
 }
 
 /// 一条记录是不是「什么都没填」——导入时用来丢掉 CSV 里的空行与占位行。
-pub fn is_blank_entry(entry: &Entry) -> bool {
+///
+/// `pub(crate)`:供 `vault::import_entries` 复用判定,不属于对外 API。
+pub(crate) fn is_blank_entry(entry: &Entry) -> bool {
     entry.title.trim().is_empty()
         && entry.username.trim().is_empty()
         && entry.password.is_empty()
@@ -643,7 +645,8 @@ fn as_string(value: &Value) -> String {
 /// 去重键:标题 + 用户名(忽略大小写与首尾空白);两者都空时退化为网址。
 ///
 /// 返回 `None` 表示这条记录没有可用来比对的标识,永远算「不重复」。
-pub fn dedupe_key(entry: &Entry) -> Option<String> {
+/// `pub(crate)`:导入去重的实现细节,由 `vault::import_entries` 使用。
+pub(crate) fn dedupe_key(entry: &Entry) -> Option<String> {
     let title = lower(&entry.title);
     let username = lower(&entry.username);
     if !title.is_empty() || !username.is_empty() {
