@@ -23,6 +23,11 @@ pub struct Entry {
     pub category: String,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// 收藏:常用条目在列表里置顶显示。
+    ///
+    /// `serde(default)`:0.1.x 写出的 JSON 没有这个字段,读旧库时必须当「未收藏」。
+    #[serde(default)]
+    pub favorite: bool,
     #[serde(default)]
     pub created: i64,
     #[serde(default)]
@@ -157,5 +162,38 @@ mod tests {
         assert!(serialized_custom.contains("column_widths"));
         let roundtrip: Settings = serde_json::from_str(&serialized_custom).expect("反序列化失败");
         assert_eq!(roundtrip.column_widths, vec![147, 113, 170, 80, 160, 150]);
+    }
+
+    /// 0.1.x 写出的 JSON 没有 favorite 字段;新版必须能读,并当成「未收藏」。
+    #[test]
+    fn entry_without_favorite_field_defaults_to_false() {
+        let old_json = r#"{
+            "id": "abc",
+            "title": "GitHub",
+            "username": "alice",
+            "password": "pw",
+            "url": "https://github.com",
+            "notes": "",
+            "category": "工作",
+            "tags": ["代码"],
+            "created": 1,
+            "updated": 2,
+            "deleted": null
+        }"#;
+        let entry: Entry = serde_json::from_str(old_json).expect("旧版条目应能反序列化");
+        assert!(!entry.favorite, "缺少 favorite 时应默认未收藏");
+        assert_eq!(entry.title, "GitHub");
+        assert_eq!(entry.password.as_str(), "pw");
+
+        // 写回时带上新字段,方便以后再升级。
+        let json = serde_json::to_string(&entry).expect("序列化失败");
+        assert!(json.contains("\"favorite\":false"));
+
+        // 新字段加上后仍可往返。
+        let mut favored = entry;
+        favored.favorite = true;
+        let json = serde_json::to_string(&favored).unwrap();
+        let back: Entry = serde_json::from_str(&json).unwrap();
+        assert!(back.favorite);
     }
 }

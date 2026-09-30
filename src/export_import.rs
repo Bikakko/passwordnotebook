@@ -224,6 +224,8 @@ fn lower(value: &str) -> String {
     value.trim().to_lowercase()
 }
 
+/// CSV 不承载收藏状态:表头固定为 [`CSV_HEADER`] 那 7 列(与 Chrome/Edge 兼容),
+/// 加一列会让别家工具读不懂。要连收藏一起备份,用 JSON 或加密的 `.pkk` 副本。
 fn export_csv(document: &Document, options: ExportOptions) -> String {
     // 带 BOM:否则 Excel 会把中文按本地代码页解读成乱码。
     let mut out = String::from("\u{feff}");
@@ -305,6 +307,8 @@ struct ExportEntry<'a> {
     url: &'a str,
     category: &'a str,
     tags: &'a [String],
+    /// JSON 里显式写出收藏状态(CSV 没有这一列,见 [`export_csv`])。
+    favorite: bool,
     notes: &'a str,
     created: i64,
     updated: i64,
@@ -331,6 +335,7 @@ fn export_json(document: &Document, options: ExportOptions) -> Result<Zeroizing<
             url: &e.url,
             category: &e.category,
             tags: &e.tags,
+            favorite: e.favorite,
             notes: &e.notes,
             created: e.created,
             updated: e.updated,
@@ -362,6 +367,7 @@ enum Field {
     Url,
     Category,
     Tags,
+    Favorite,
     Notes,
     Created,
     Updated,
@@ -378,6 +384,9 @@ const URL_ALIASES: &[&str] = &[
 ];
 const CATEGORY_ALIASES: &[&str] = &["category", "folder", "group", "grouping", "分类", "分组", "文件夹", "目录"];
 const TAGS_ALIASES: &[&str] = &["tags", "tag", "labels", "label", "标签"];
+const FAVORITE_ALIASES: &[&str] = &[
+    "favorite", "favourite", "starred", "pinned", "收藏", "收藏夹", "置顶",
+];
 const NOTES_ALIASES: &[&str] = &["notes", "note", "comment", "comments", "extra", "memo", "备注", "说明", "注释"];
 const ID_ALIASES: &[&str] = &["id", "uuid", "标识"];
 const CREATED_ALIASES: &[&str] = &["created", "createdat", "creationtime", "创建时间", "创建于"];
@@ -385,7 +394,7 @@ const UPDATED_ALIASES: &[&str] = &[
     "updated", "updatedat", "modified", "modifiedat", "lastmodified", "更新时间", "修改时间",
 ];
 
-/// 表头/字段名 → 规范字段。未知字段返回 `None`(直接忽略,例如 Bitwarden 的 `favorite`)。
+/// 表头/字段名 → 规范字段。未知字段返回 `None`(直接忽略,例如 1Password 的 `type`)。
 fn field_from_key(raw: &str) -> Option<Field> {
     let key = normalize_key(raw);
     if key.is_empty() {
@@ -399,6 +408,7 @@ fn field_from_key(raw: &str) -> Option<Field> {
         (URL_ALIASES, Field::Url),
         (CATEGORY_ALIASES, Field::Category),
         (TAGS_ALIASES, Field::Tags),
+        (FAVORITE_ALIASES, Field::Favorite),
         (NOTES_ALIASES, Field::Notes),
         (CREATED_ALIASES, Field::Created),
         (UPDATED_ALIASES, Field::Updated),
@@ -473,6 +483,7 @@ fn entry_from_row(header: &[Option<Field>], record: &[String]) -> Entry {
             Field::Url => entry.url = value,
             Field::Category => entry.category = value,
             Field::Tags => tags.extend(split_tags(&value)),
+            Field::Favorite => entry.favorite = truthy(&value),
             Field::Notes => entry.notes = value,
             Field::Created => entry.created = parse_timestamp(&value),
             Field::Updated => entry.updated = parse_timestamp(&value),
@@ -623,6 +634,7 @@ fn entry_from_object(map: &Map<String, Value>) -> Entry {
                 }
                 other => tags.extend(split_tags(&as_string(other))),
             },
+            Field::Favorite => entry.favorite = as_bool(value),
             Field::Notes => entry.notes = as_string(value),
             Field::Created => entry.created = parse_timestamp(&as_string(value)),
             Field::Updated => entry.updated = parse_timestamp(&as_string(value)),
@@ -631,6 +643,24 @@ fn entry_from_object(map: &Map<String, Value>) -> Entry {
 
     entry.tags = tags;
     entry
+}
+
+/// 真值解析:兼容 JSON 布尔与 Bitwarden 的 `1`/`0`,以及 `yes`/`是` 这类写法。
+/// 认不出来的一律当「否」——收藏不是关键数据,宁可漏掉也不要误判。
+fn as_bool(value: &Value) -> bool {
+    match value {
+        Value::Bool(b) => *b,
+        Value::Number(n) => n.as_i64().is_some_and(|i| i != 0),
+        other => truthy(&as_string(other)),
+    }
+}
+
+/// 文本形式的真值(CSV 单元格与 JSON 字符串共用)。
+fn truthy(text: &str) -> bool {
+    matches!(
+        text.trim().to_lowercase().as_str(),
+        "1" | "true" | "yes" | "y" | "on" | "是" | "真" | "收藏"
+    )
 }
 
 fn as_string(value: &Value) -> String {
@@ -957,6 +987,49 @@ mod tests {
     }
 
     #[test]
+    fn json_round_trips_favorite() {
+        let mut document = sample_document();
+        document.entries[0].favorite = true;
+        let text = export_json(&document, ExportOptions::default()).unwrap();
+        assert!(text.contains("\"favorite\": true"), "JSON 应显式写出收藏状态");
+
+        let parsed = parse_json(&text).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert!(parsed[1].favorite, "收藏应随 JSON 往返");
+        assert!(!parsed[0].favorite);
+    }
+
+    #[test]
+    fn json_accepts_string_and_numeric_favorite() {
+        let text = r#"{"entries":[{"title":"A","favorite":"yes"},{"title":"B","favorite":0}]}"#;
+        let parsed = parse_json(text).unwrap();
+        assert!(parsed[0].favorite);
+        assert!(!parsed[1].favorite);
+    }
+
+    #[test]
+    fn bitwarden_favorite_column_is_recognized() {
+        let text = "folder,favorite,type,name,notes,login_uri,login_username,login_password\n\
+                    工作,1,login,GitHub,,https://github.com,alice,pw\n\
+                    个人,0,login,邮箱,,,bob,pw2\n";
+        let parsed = parse_csv(text).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert!(parsed[0].favorite, "Bitwarden 的 favorite=1 应识别为收藏");
+        assert!(!parsed[1].favorite);
+        assert_eq!(parsed[0].password.as_str(), "pw");
+    }
+
+    #[test]
+    fn csv_export_has_no_favorite_column() {
+        let mut document = sample_document();
+        document.entries[0].favorite = true;
+        let text = export_csv(&document, ExportOptions::default());
+        assert!(!text.to_lowercase().contains("favorite"), "CSV 表头保持 7 列不变");
+        let parsed = parse_csv(&text).unwrap();
+        assert!(parsed.iter().all(|e| !e.favorite), "CSV 不承载收藏");
+    }
+
+    #[test]
     fn json_accepts_bare_array_and_aliases() {
         let text = r#"[{"name":"标题","login":"用户","password":"p","tags":"a|b"}]"#;
         let parsed = parse_json(text).unwrap();
@@ -967,7 +1040,7 @@ mod tests {
 
     #[test]
     fn json_import_ignores_unknown_keys() {
-        let text = r#"{"format":"password-notebook","version":1,"entries":[{"title":"T","favorite":true,"totp":"x"}]}"#;
+        let text = r#"{"format":"password-notebook","version":1,"entries":[{"title":"T","totp":"x","fields":[{"name":"pin"}]}]}"#;
         let parsed = parse_json(text).unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].title, "T");

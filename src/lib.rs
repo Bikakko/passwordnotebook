@@ -11,6 +11,7 @@ pub mod header;
 pub mod model;
 pub mod paths;
 pub mod recovery;
+pub mod search;
 pub mod strength;
 pub mod vault;
 pub mod vaultfile;

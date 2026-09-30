@@ -764,10 +764,15 @@ fn has_quick_unlock_cache() -> bool {
 }
 
 fn display_title(entry: &Entry) -> String {
-    if entry.title.trim().is_empty() {
+    let title = if entry.title.trim().is_empty() {
         "(无标题)".to_string()
     } else {
         entry.title.clone()
+    };
+    if entry.favorite {
+        format!("★ {title}")
+    } else {
+        title
     }
 }
 
@@ -806,16 +811,6 @@ fn refresh_filters(hwnd: HWND) {
     ui::send_msg(s.tag_list, LB_SETCURSEL, tag_index.max(0) as usize, 0);
 }
 
-fn matches(entry: &Entry, query: &str) -> bool {
-    let hit = |s: &str| s.to_lowercase().contains(query);
-    hit(&entry.title)
-        || hit(&entry.username)
-        || hit(&entry.url)
-        || hit(&entry.notes)
-        || hit(&entry.category)
-        || entry.tags.iter().any(|t| hit(t))
-}
-
 fn refresh_list(hwnd: HWND) {
     // 先问"当前选中是哪条":它内部也会 st(hwnd),放到前面,免得与下面的 s 同时活着。
     let selected = selected_entry_id(hwnd);
@@ -847,14 +842,12 @@ fn refresh_list(hwnd: HWND) {
         items.retain(|e| e.tags.iter().any(|t| *t == tag));
     }
     if !query.is_empty() {
-        items.retain(|e| matches(e, &query));
+        items.retain(|e| crate::search::matches(e, &query));
     }
 
-    match sort {
-        1 => items.sort_by(|a, b| a.title.cmp(&b.title)),
-        2 => items.sort_by(|a, b| a.category.cmp(&b.category).then(a.title.cmp(&b.title))),
-        _ => items.sort_by(|a, b| b.updated.cmp(&a.updated)),
-    }
+    // 收藏置顶、搜索命中优先这些规则都在可移植核心 `search` 里(那样才测得到);
+    // 界面只负责把下拉框下标翻译成排序方式。
+    crate::search::sort_entries(&mut items, crate::search::SortMode::from_combo(sort), &query);
 
     ui::listview_clear(s.list);
     s.rows.clear();
@@ -1217,6 +1210,7 @@ const CMD_OPEN_URL: usize = 3003;
 const CMD_NEW: usize = 3004;
 const CMD_EDIT: usize = 3005;
 const CMD_DELETE: usize = 3006;
+const CMD_FAVORITE: usize = 3007;
 
 /// 主列表的右键菜单:复制类操作放最上面。
 pub fn on_context_menu(hwnd: HWND) -> bool {
@@ -1267,22 +1261,32 @@ pub fn on_context_menu(hwnd: HWND) -> bool {
         // 条目上:先选中它,菜单里不再出现「新建」。
         ui::listview_select(list, index);
 
-        let (has_password, has_username, has_url) = selected_entry_id(hwnd)
+        let (has_password, has_username, has_url, is_favorite) = selected_entry_id(hwnd)
             .and_then(|id| {
                 with_entry(hwnd, &id, |e| {
                     (
                         !e.password.is_empty(),
                         !e.username.is_empty(),
                         !e.url.trim().is_empty(),
+                        e.favorite,
                     )
                 })
             })
-            .unwrap_or((false, false, false));
+            .unwrap_or((false, false, false, false));
 
         // 没有内容的复制项灰显,点不动。
         menu.add_item(CMD_COPY_PW, "复制密码", has_password);
         menu.add_item(CMD_COPY_USER, "复制用户名", has_username);
         menu.add_item(CMD_OPEN_URL, "复制网址", has_url);
+        menu.add_separator();
+        menu.add(
+            CMD_FAVORITE,
+            if is_favorite {
+                "取消收藏"
+            } else {
+                "收藏"
+            },
+        );
         menu.add_separator();
 
         // 移动到分类
@@ -1310,6 +1314,7 @@ pub fn on_context_menu(hwnd: HWND) -> bool {
         Some(CMD_COPY_PW) => copy_password(hwnd),
         Some(CMD_COPY_USER) => copy_username(hwnd),
         Some(CMD_OPEN_URL) => copy_selected_url(hwnd),
+        Some(CMD_FAVORITE) => toggle_favorite_selected(hwnd),
         Some(CMD_NEW) => {
             let categories = app::state().vault.known_categories();
             let tags = app::state().vault.known_tags();
@@ -1830,6 +1835,23 @@ fn delete_selected(hwnd: HWND) {
     }
     refresh_filters(hwnd);
     refresh_list(hwnd);
+}
+
+fn toggle_favorite_selected(hwnd: HWND) {
+    let Some(id) = selected_entry_id(hwnd) else {
+        return;
+    };
+    match app::state().vault.toggle_favorite(&id) {
+        Ok(true) => {
+            refresh_list(hwnd);
+            ui::set_text(st(hwnd).status, "已收藏,列表中会置顶显示");
+        }
+        Ok(false) => {
+            refresh_list(hwnd);
+            ui::set_text(st(hwnd).status, "已取消收藏");
+        }
+        Err(e) => ui::error(hwnd, &e.to_string(), "操作失败"),
+    }
 }
 
 fn copy_password(hwnd: HWND) {

@@ -312,6 +312,8 @@ fn save(hwnd: HWND) {
     s.result.category = category;
     s.result.notes = ui::get_text(s.notes);
     s.result.tags = tags;
+    // 收藏只从右键菜单改,编辑框不动它 —— `result` 是从原条目克隆来的,
+    // 这里不碰 `favorite` 就等于原样保留。
     s.result.updated = now_secs();
     s.accepted = true;
 

@@ -494,3 +494,72 @@ fn entry_password_stays_a_plain_json_string() {
     let back: Entry = serde_json::from_str(&json).unwrap();
     assert_eq!(back.password.as_str(), "pw-x");
 }
+
+// ---------- 收藏 ----------
+
+#[test]
+fn toggle_favorite_persists() {
+    let tv = TempVault::new("fav");
+    tv.create(PASSWORD);
+
+    let mut vault = VaultService::new();
+    vault.open(&tv.path, PASSWORD).unwrap();
+    vault.add_entry(entry("GitHub", "开发", &[])).unwrap();
+    let id = vault.active_entries().next().unwrap().id.clone();
+
+    assert!(!vault.active_entries().next().unwrap().favorite);
+    assert!(vault.toggle_favorite(&id).unwrap());
+    assert!(vault.active_entries().next().unwrap().favorite);
+
+    // 落盘:重开之后收藏状态还在。
+    let mut reopened = VaultService::new();
+    reopened.open(&tv.path, PASSWORD).unwrap();
+    assert!(reopened.active_entries().next().unwrap().favorite);
+
+    assert!(!reopened.toggle_favorite(&id).unwrap());
+    assert!(!reopened.active_entries().next().unwrap().favorite);
+}
+
+#[test]
+fn toggle_favorite_rejects_unknown_id_and_locked_vault() {
+    let tv = TempVault::new("fav-err");
+    tv.create(PASSWORD);
+
+    let mut locked = VaultService::new();
+    assert!(matches!(
+        locked.toggle_favorite("nope"),
+        Err(VaultError::Locked)
+    ));
+
+    let mut vault = VaultService::new();
+    vault.open(&tv.path, PASSWORD).unwrap();
+    assert!(matches!(
+        vault.toggle_favorite("nope"),
+        Err(VaultError::NotFound)
+    ));
+}
+
+/// 收藏只在右键菜单里改,编辑框不提供这一项 —— 所以「编辑条目」不能顺手把
+/// 收藏状态抹掉(`update_entry` 写回的是编辑器克隆出来的整条记录)。
+#[test]
+fn editing_an_entry_keeps_its_favorite() {
+    let tv = TempVault::new("fav-edit");
+    tv.create(PASSWORD);
+
+    let mut vault = VaultService::new();
+    vault.open(&tv.path, PASSWORD).unwrap();
+    vault.add_entry(entry("GitHub", "开发", &[])).unwrap();
+
+    let id = vault.active_entries().next().unwrap().id.clone();
+    vault.toggle_favorite(&id).unwrap();
+
+    // 模拟编辑器:克隆原条目,只改自己负责的字段,收藏原样带过去。
+    let mut edited = vault.active_entries().next().unwrap().clone();
+    assert!(edited.favorite, "编辑器拿到的应是已收藏的条目");
+    edited.notes = "改过的备注".into();
+    vault.update_entry(edited).unwrap();
+
+    let after = vault.active_entries().next().unwrap();
+    assert!(after.favorite, "编辑不应清掉收藏");
+    assert_eq!(after.notes, "改过的备注");
+}

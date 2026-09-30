@@ -485,6 +485,7 @@ impl VaultService {
         target.notes = entry.notes;
         target.category = entry.category;
         target.tags = entry.tags;
+        target.favorite = entry.favorite;
         target.updated = now_secs();
 
         ensure_category(document, &category);
@@ -543,7 +544,7 @@ impl VaultService {
     ///
     /// 去重按「标题 + 用户名」(忽略大小写与首尾空白);两者都为空时退化为网址。
     /// 覆盖策略下,导入项的密码为空表示**保留原密码** —— 一份不含密码的导出文件
-    /// 不应该把库里已有的密码清掉。
+    /// 不应该把库里已有的密码清掉。收藏状态同理:只置上,不清除。
     ///
     /// 无论文件里写的是什么 id,导入时一律分配新 id:否则来自同一个库的备份
     /// 会与库内条目撞 id,后续的编辑与彻底删除都会作用到错误的对象上。
@@ -601,6 +602,10 @@ impl VaultService {
                         target.url = entry.url;
                         target.category = entry.category;
                         target.tags = entry.tags;
+                        // 收藏同理:CSV 没有收藏列,旧版 JSON 也没有这个字段,
+                        // 它们解析出来一律是 false。直接赋值会把库里已有的收藏清空,
+                        // 所以只「置上」不清除(代价:无法用导入取消收藏)。
+                        target.favorite |= entry.favorite;
                         target.notes = entry.notes;
                         target.updated = now;
                         outcome.updated += 1;
@@ -773,6 +778,23 @@ impl VaultService {
             self.save()?;
         }
         Ok(removed)
+    }
+
+    // ---------- 收藏 ----------
+
+    /// 切换条目的收藏状态,返回切换后的值。
+    pub fn toggle_favorite(&mut self, id: &str) -> Result<bool> {
+        let document = self.document.as_mut().ok_or(VaultError::Locked)?;
+        let target = document
+            .entries
+            .iter_mut()
+            .find(|e| e.id == id)
+            .ok_or(VaultError::NotFound)?;
+        target.favorite = !target.favorite;
+        target.updated = now_secs();
+        let favorite = target.favorite;
+        self.save()?;
+        Ok(favorite)
     }
 }
 

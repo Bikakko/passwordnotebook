@@ -205,6 +205,56 @@ fn json_export_is_a_lossless_backup() {
 }
 
 #[test]
+fn json_backup_carries_favorites() {
+    let tmp = TempDir::new("json-favorite");
+    let mut source = tmp.vault_with("source.pkk");
+    source.add_entry(sample_entry()).unwrap();
+    let id = source.active_entries().next().unwrap().id.clone();
+    source.toggle_favorite(&id).unwrap();
+
+    let file = tmp.join("backup.json");
+    export_import::export_to_path(
+        source.document().unwrap(),
+        &file,
+        Format::Json,
+        ExportOptions::default(),
+    )
+    .unwrap();
+
+    let parsed = export_import::import_from_path(&file).unwrap();
+    assert!(parsed[0].favorite, "备份文件里应带上收藏状态");
+
+    let mut target = tmp.vault_with("target.pkk");
+    target.import_entries(parsed, DuplicateStrategy::Append).unwrap();
+    assert!(target.active_entries().next().unwrap().favorite);
+}
+
+#[test]
+fn overwrite_import_keeps_existing_favorites() {
+    let tmp = TempDir::new("favorite-keep");
+    let mut vault = tmp.vault_with("vault.pkk");
+    vault
+        .add_entry(plain_entry("GitHub", "alice", "pw"))
+        .unwrap();
+    let id = vault.active_entries().next().unwrap().id.clone();
+    vault.toggle_favorite(&id).unwrap();
+
+    // CSV 没有收藏列,解析出来一律是「未收藏」——不能因此把库里的收藏抹掉。
+    let csv = "title,username,password\nGitHub,alice,newpw\n";
+    let incoming = export_import::parse(csv, Some(Format::Csv)).unwrap();
+    assert!(!incoming[0].favorite);
+
+    vault
+        .import_entries(incoming, DuplicateStrategy::Overwrite)
+        .unwrap();
+
+    let entry = vault.active_entries().next().unwrap();
+    assert!(entry.favorite, "覆盖导入不应清掉已有收藏");
+    assert_eq!(entry.password.as_str(), "newpw");
+    assert_eq!(entry.id, id, "覆盖导入应沿用原 id");
+}
+
+#[test]
 fn import_respects_timestamps_from_the_file() {
     let tmp = TempDir::new("timestamps");
     let mut vault = tmp.vault_with("vault.pkk");
