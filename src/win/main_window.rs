@@ -216,13 +216,14 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             main_ui::on_command(hwnd, id, code);
             LRESULT(0)
         }
-        WM_NOTIFY => {
-            main_ui::on_notify(hwnd, lparam);
-            LRESULT(0)
-        }
+        WM_NOTIFY => LRESULT(main_ui::on_notify(hwnd, lparam)),
         WM_CTLCOLORSTATIC => LRESULT(main_ui::on_ctlcolor_static(hwnd, wparam.0, lparam.0)),
         TSM_TAB_CHANGED => {
             main_ui::on_tab_changed(hwnd);
+            LRESULT(0)
+        }
+        TSM_COLUMN_RESIZED => {
+            main_ui::on_column_resized(hwnd);
             LRESULT(0)
         }
         WM_CONTEXTMENU => {

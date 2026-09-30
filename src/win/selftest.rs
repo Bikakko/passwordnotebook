@@ -253,6 +253,7 @@ fn core_checks() -> usize {
         let mut settings = crate::model::Settings::default();
         settings.clipboard_clear_seconds = 42;
         settings.idle_lock_minutes = 7;
+        settings.column_widths = vec![147, 113, 170, 80, 160, 150];
         check!("设置写入库内", unlocked.update_settings(settings).is_ok());
     }
 
@@ -261,12 +262,21 @@ fn core_checks() -> usize {
     {
         let mut reopened = VaultService::new();
         let ok = reopened.open(&path, NEW_PWD).is_ok();
-        let persisted = reopened
-            .document()
-            .map(|d| (d.settings.clipboard_clear_seconds, d.settings.idle_lock_minutes));
+        let persisted = reopened.document().map(|d| {
+            (
+                d.settings.clipboard_clear_seconds,
+                d.settings.idle_lock_minutes,
+                d.settings.column_widths.clone(),
+            )
+        });
         check!(
-            "设置随库持久化(42 / 7 分钟)",
-            ok && persisted == Some((42, 7))
+            "设置随库持久化(42 / 7 分钟 / 列宽)",
+            ok && persisted
+                == Some((
+                    42,
+                    7,
+                    vec![147, 113, 170, 80, 160, 150]
+                ))
         );
     }
     check!(

@@ -576,6 +576,37 @@ pub fn listview_set_column_width(hwnd: HWND, column: i32, width: i32) {
     send_msg(hwnd, LVM_SETCOLUMNWIDTH, column as usize, width as isize);
 }
 
+/// 获取某一列的宽度(LVM_GETCOLUMNWIDTH)。
+pub fn listview_get_column_width(hwnd: HWND, column: i32) -> i32 {
+    send_msg(hwnd, LVM_GETCOLUMNWIDTH, column as usize, 0) as i32
+}
+
+/// 获取列表视图的表头控件句柄(LVM_GETHEADER)。
+pub fn listview_get_header(hwnd: HWND) -> HWND {
+    HWND(send_msg(hwnd, LVM_GETHEADER, 0, 0) as *mut std::ffi::c_void)
+}
+
+/// 设置列表视图的行高(通过虚拟 ImageList 设置)。
+pub fn listview_set_row_height(hwnd: HWND, height: i32) {
+    unsafe {
+        let himl = windows::Win32::UI::Controls::ImageList_Create(
+            1,
+            height.max(1),
+            windows::Win32::UI::Controls::ILC_COLOR,
+            1,
+            1,
+        );
+        if !himl.is_invalid() {
+            let prev = send_msg(hwnd, LVM_SETIMAGELIST, LVSIL_SMALL, himl.0);
+            if prev != 0 {
+                let _ = windows::Win32::UI::Controls::ImageList_Destroy(Some(
+                    windows::Win32::UI::Controls::HIMAGELIST(prev),
+                ));
+            }
+        }
+    }
+}
+
 pub fn listview_selected_index(hwnd: HWND) -> i32 {
     send_msg(hwnd, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize) as i32
 }

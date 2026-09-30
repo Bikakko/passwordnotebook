@@ -4,7 +4,7 @@ use std::ffi::c_void;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::{HWND, LPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows::Win32::UI::Controls::NMHDR;
 use windows::Win32::UI::WindowsAndMessaging::MSG;
 
@@ -23,6 +23,36 @@ use super::{
     clipboard, dialog, dlg_editor, dlg_generator, dlg_input, dlg_recovery, dlg_settings, dlg_taxonomy,
     dpapi, hello, idle,
 };
+
+/// 列表行高度(基准 96 DPI 下的高度;系统原本约为 24px,增加 20%~25% 至 30px,
+/// 同步增大上下内边距使行间距更舒适)。
+pub const LIST_ROW_HEIGHT: i32 = 30;
+
+/// 加强网格线的颜色(比系统默认淡淡的灰色更显眼、更清晰)。
+/// COLORREF 为 0x00BBGGRR:RGB(197, 202, 211) -> 0x00D3CAC5
+pub const GRIDLINE_COLOR: u32 = 0x00D3_CAC5;
+
+/// 列表列定义:(列标题, 默认逻辑像素宽度, 默认百分比分配)
+pub type ListColDef = (&'static str, i32, i32);
+
+/// 主列表列配置
+pub const MAIN_LIST_COLUMNS: &[ListColDef] = &[
+    ("标题", 147, 17),
+    ("用户名", 113, 13),
+    ("网址", 170, 21),
+    ("分类", 80, 9),
+    ("标签", 160, 20),
+    ("更新时间", 150, 20),
+];
+
+/// 回收站列表列配置
+pub const BIN_LIST_COLUMNS: &[ListColDef] = &[
+    ("标题", 220, 28),
+    ("用户名", 170, 20),
+    ("分类", 120, 14),
+    ("删除时间", 170, 20),
+    ("保留", 120, 18),
+];
 
 // ---------- 控件 ID ----------
 const ID_UNLOCK_TITLE: usize = 2001;
@@ -241,6 +271,13 @@ pub fn apply_fonts(hwnd: HWND) {
     for control in [s.unlock_title, s.create_title, s.bin_title] {
         ui::send_msg(control, WM_SETFONT, bold.0 as usize, 1);
     }
+
+    if s.list.0 != std::ptr::null_mut() {
+        ui::listview_set_row_height(s.list, scale(LIST_ROW_HEIGHT));
+    }
+    if s.bin_list.0 != std::ptr::null_mut() {
+        ui::listview_set_row_height(s.bin_list, scale(LIST_ROW_HEIGHT));
+    }
 }
 
 /// 静态文本统一画成透明背景;错误提示用红色。
@@ -393,11 +430,9 @@ pub fn on_create(hwnd: HWND, lparam: LPARAM) {
     s.status = text(hwnd, "", ID_STATUS);
 
     ui::listview_set_extended_style(s.list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
-    ui::listview_add_column(s.list, 0, 220, "标题");
-    ui::listview_add_column(s.list, 1, 170, "用户名");
-    ui::listview_add_column(s.list, 2, 120, "分类");
-    ui::listview_add_column(s.list, 3, 160, "标签");
-    ui::listview_add_column(s.list, 4, 150, "更新时间");
+    for (i, &(title, width, _)) in MAIN_LIST_COLUMNS.iter().enumerate() {
+        ui::listview_add_column(s.list, i as i32, width, title);
+    }
 
     s.bin_title = text(hwnd, "回收站", ID_BIN_TITLE);
     s.bin_hint = text(
@@ -412,11 +447,9 @@ pub fn on_create(hwnd: HWND, lparam: LPARAM) {
     s.bin_back_btn = button(hwnd, "返回列表", BS_PUSHBUTTON, ID_BIN_BACK_BTN);
 
     ui::listview_set_extended_style(s.bin_list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
-    ui::listview_add_column(s.bin_list, 0, 220, "标题");
-    ui::listview_add_column(s.bin_list, 1, 170, "用户名");
-    ui::listview_add_column(s.bin_list, 2, 120, "分类");
-    ui::listview_add_column(s.bin_list, 3, 170, "删除时间");
-    ui::listview_add_column(s.bin_list, 4, 120, "保留");
+    for (i, &(title, width, _)) in BIN_LIST_COLUMNS.iter().enumerate() {
+        ui::listview_add_column(s.bin_list, i as i32, width, title);
+    }
 
     ui::combo_add(s.sort_combo, "更新时间");
     ui::combo_add(s.sort_combo, "标题");
@@ -560,7 +593,8 @@ fn layout_inner(hwnd: HWND) {
         place(s.bin_hint, pad, pad + scale(34), w, scale(44));
         let list_h = (ch - pad * 2 - scale(82) - scale(48)).max(scale(80));
         place(s.bin_list, pad, pad + scale(82), w, list_h);
-        set_list_columns(s.bin_list, w, &[28, 20, 14, 20, 18]);
+        let bin_percents: Vec<i32> = BIN_LIST_COLUMNS.iter().map(|c| c.2).collect();
+        set_list_columns(s.bin_list, w, &bin_percents);
         let by = ch - pad - scale(36);
         place(s.bin_restore_btn, pad, by, scale(110), scale(34));
         place(s.bin_purge_btn, pad + scale(122), by, scale(120), scale(34));
@@ -621,7 +655,14 @@ fn layout_inner(hwnd: HWND) {
     let list_y = top + tabs_h + scale(4);
     let list_h = (body_h - tabs_h - scale(4)).max(scale(60));
     place(s.list, tabs_x, list_y, tabs_w, list_h);
-    set_list_columns(s.list, tabs_w, &[26, 20, 14, 20, 20]);
+    if app::state().settings.column_widths.len() == MAIN_LIST_COLUMNS.len() {
+        for (index, &width) in app::state().settings.column_widths.iter().enumerate() {
+            ui::listview_set_column_width(s.list, index as i32, width);
+        }
+    } else {
+        let percents: Vec<i32> = MAIN_LIST_COLUMNS.iter().map(|c| c.2).collect();
+        set_list_columns(s.list, tabs_w, &percents);
+    }
 
     place(s.status, margin, ch - status_h, cw - margin * 2, status_h);
 }
@@ -809,6 +850,7 @@ fn refresh_list(hwnd: HWND) {
             &[
                 display_title(entry),
                 entry.username.clone(),
+                entry.url.clone(),
                 display_category(entry),
                 entry.tags.join("、"),
                 timefmt::local_string(entry.updated),
@@ -1026,16 +1068,113 @@ pub fn on_command(hwnd: HWND, id: usize, code: u16) {
     }
 }
 
-pub fn on_notify(hwnd: HWND, lparam: LPARAM) {
+pub fn on_notify(hwnd: HWND, lparam: LPARAM) -> isize {
     let header = unsafe { &*(lparam.0 as *const NMHDR) };
-    // 只处理主列表的双击。
-    //
-    // 回车不在这里处理:ListView 获得焦点时按回车本该上报 NM_RETURN,但主窗口的
-    // 消息循环走 IsDialogMessageW,它会先把回车处理掉(当成点默认按钮),NM_RETURN
-    // 到不了这里。要支持回车打开条目,得在消息循环里先于 IsDialogMessageW 拦截。
     let code = header.code as i32;
-    if st(hwnd).list == header.hwndFrom && code == NM_DBLCLK {
+    let list = st(hwnd).list;
+    let bin_list = st(hwnd).bin_list;
+
+    // 自定义绘制:增强列表网格线(水平分隔线与垂直列分隔线)
+    if code == NM_CUSTOMDRAW && (header.hwndFrom == list || header.hwndFrom == bin_list) {
+        use windows::Win32::Foundation::COLORREF;
+        use windows::Win32::Graphics::Gdi::{
+            CreateSolidBrush, DeleteObject, FillRect, HGDIOBJ,
+        };
+        use windows::Win32::UI::Controls::{
+            CDDS_ITEMPOSTPAINT, CDDS_ITEMPREPAINT, CDDS_PREPAINT, CDRF_DODEFAULT,
+            CDRF_NOTIFYITEMDRAW, CDRF_NOTIFYPOSTPAINT, NMLVCUSTOMDRAW,
+        };
+
+        let lvcd = unsafe { &*(lparam.0 as *const NMLVCUSTOMDRAW) };
+        let stage = lvcd.nmcd.dwDrawStage;
+
+        if stage == CDDS_PREPAINT {
+            return CDRF_NOTIFYITEMDRAW as isize;
+        }
+        if stage == CDDS_ITEMPREPAINT {
+            return CDRF_NOTIFYPOSTPAINT as isize;
+        }
+        if stage == CDDS_ITEMPOSTPAINT {
+            let hdc = lvcd.nmcd.hdc;
+            let rc = lvcd.nmcd.rc;
+            let brush = unsafe { CreateSolidBrush(COLORREF(GRIDLINE_COLOR)) };
+
+            // 1. 下方水平网格线
+            let bottom_line = RECT {
+                left: rc.left,
+                top: rc.bottom - 1,
+                right: rc.right,
+                bottom: rc.bottom,
+            };
+            unsafe {
+                FillRect(hdc, &bottom_line, brush);
+            }
+
+            // 2. 垂直列分隔线
+            let col_count = if header.hwndFrom == bin_list {
+                BIN_LIST_COLUMNS.len()
+            } else {
+                MAIN_LIST_COLUMNS.len()
+            };
+            let mut cur_x = rc.left;
+            for col in 0..(col_count - 1) {
+                let w = ui::listview_get_column_width(header.hwndFrom, col as i32);
+                cur_x += w;
+                let col_line = RECT {
+                    left: cur_x - 1,
+                    top: rc.top,
+                    right: cur_x,
+                    bottom: rc.bottom,
+                };
+                unsafe {
+                    FillRect(hdc, &col_line, brush);
+                }
+            }
+
+            unsafe {
+                let _ = DeleteObject(HGDIOBJ(brush.0));
+            }
+            return CDRF_DODEFAULT as isize;
+        }
+        return CDRF_DODEFAULT as isize;
+    }
+
+    if list == header.hwndFrom && code == NM_DBLCLK {
         edit_selected(hwnd);
+        return 0;
+    }
+
+    let is_list_header = {
+        let list_hdr = ui::listview_get_header(list);
+        header.hwndFrom == list_hdr
+            || (list_hdr.0.is_null() && header.hwndFrom == list)
+            || unsafe { windows::Win32::UI::WindowsAndMessaging::GetParent(header.hwndFrom) }.unwrap_or_default() == list
+    };
+
+    if is_list_header
+        && (code == HDN_ENDTRACKW
+            || code == HDN_ENDTRACKA
+            || code == HDN_DIVIDERDBLCLICKW
+            || code == HDN_DIVIDERDBLCLICKA)
+    {
+        ui::post_message(hwnd, TSM_COLUMN_RESIZED, 0, 0);
+    }
+
+    0
+}
+
+/// 用户在主列表中调整了某一列的宽度:读取全部列的宽度并持久化到 data.pkk
+pub fn on_column_resized(hwnd: HWND) {
+    if app::state().mode != Mode::Unlocked || !app::state().vault.is_unlocked() {
+        return;
+    }
+    let s = st(hwnd);
+    let widths: Vec<i32> = (0..MAIN_LIST_COLUMNS.len())
+        .map(|i| ui::listview_get_column_width(s.list, i as i32))
+        .collect();
+    if widths.iter().all(|&w| w > 0) && app::state().settings.column_widths != widths {
+        app::state().settings.column_widths = widths.clone();
+        let _ = app::state().vault.update_settings(app::state().settings.clone());
     }
 }
 

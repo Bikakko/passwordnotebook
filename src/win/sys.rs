@@ -145,7 +145,11 @@ pub const LVM_SETEXTENDEDLISTVIEWSTYLE: u32 = LVM_FIRST + 54;
 pub const LVM_GETITEMCOUNT: u32 = LVM_FIRST + 4;
 pub const LVM_ENSUREVISIBLE: u32 = LVM_FIRST + 19;
 pub const LVM_SETITEMSTATE: u32 = LVM_FIRST + 43;
+pub const LVM_GETCOLUMNWIDTH: u32 = LVM_FIRST + 29;
 pub const LVM_SETCOLUMNWIDTH: u32 = LVM_FIRST + 30;
+pub const LVM_GETHEADER: u32 = LVM_FIRST + 31;
+pub const LVM_SETIMAGELIST: u32 = LVM_FIRST + 3;
+pub const LVSIL_SMALL: usize = 1;
 
 pub const LVNI_SELECTED: u32 = 0x0002;
 
@@ -162,6 +166,8 @@ pub const TCM_SETITEMSIZE: u32 = TCM_FIRST + 41;
 pub const WM_DRAWITEM: u32 = 0x002B;
 /// 标签条控件 → 父窗口:当前选中的标签变了。
 pub const TSM_TAB_CHANGED: u32 = WM_APP + 1;
+/// 列表列宽变动 → 父窗口:用户调整了主列表的列宽。
+pub const TSM_COLUMN_RESIZED: u32 = WM_APP + 2;
 pub const ODS_SELECTED: u32 = 0x0001;
 pub const TCS_OWNERDRAWFIXED: u32 = 0x0400;
 pub const DT_CENTER: u32 = 0x0001;
@@ -180,10 +186,17 @@ pub const TCS_MULTILINE: u32 = 0x0200;
 // 注意:LVCOLUMNW / LVITEMW 的位标志字段是 `windows` crate 的新类型,
 // 因此 LVCF_* / LVIF_* / LVIS_* 一律使用 crate 里的常量,这里不再重复定义。
 
+pub const NM_CUSTOMDRAW: i32 = -12;
 pub const NM_DBLCLK: i32 = -3;
 pub const NM_RETURN: i32 = -4;
 pub const LVN_ITEMCHANGED: i32 = -101;
 pub const LVN_KEYDOWN: i32 = -155;
+
+// ---------- 列表头控件(Header)通知 ----------
+pub const HDN_DIVIDERDBLCLICKA: i32 = -305;
+pub const HDN_DIVIDERDBLCLICKW: i32 = -325;
+pub const HDN_ENDTRACKA: i32 = -307;
+pub const HDN_ENDTRACKW: i32 = -327;
 
 // ---------- 通知码 ----------
 pub const BN_CLICKED: u16 = 0;

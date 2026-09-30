@@ -105,6 +105,10 @@ pub struct Settings {
     pub bin_retention_days: i64,
     /// 窗口置顶。
     pub always_on_top: bool,
+    /// 自定义列表各列宽度(像素):[标题, 用户名, 网址, 分类, 标签, 更新时间]。
+    /// 若为空表示未调整过,使用默认长度与比例。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub column_widths: Vec<i32>,
 }
 
 impl Default for Settings {
@@ -116,6 +120,42 @@ impl Default for Settings {
             clipboard_clear_seconds: 20,
             bin_retention_days: 30,
             always_on_top: false,
+            column_widths: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_default_and_backward_compatibility() {
+        let default_settings = Settings::default();
+        assert!(default_settings.column_widths.is_empty());
+
+        // 旧版本 JSON 没有 column_widths 字段,能正常反序列化
+        let old_json = r#"{
+            "quick_unlock_enabled": true,
+            "require_windows_hello": false,
+            "idle_lock_minutes": 0,
+            "clipboard_clear_seconds": 20,
+            "bin_retention_days": 30,
+            "always_on_top": false
+        }"#;
+        let s: Settings = serde_json::from_str(old_json).expect("反序列化旧版设置失败");
+        assert!(s.column_widths.is_empty());
+
+        // 默认状态下空 column_widths 不会被序列化出来
+        let serialized = serde_json::to_string(&s).expect("序列化失败");
+        assert!(!serialized.contains("column_widths"));
+
+        // 自定义列宽时正常序列化与反序列化
+        let mut custom = s;
+        custom.column_widths = vec![147, 113, 170, 80, 160, 150];
+        let serialized_custom = serde_json::to_string(&custom).expect("序列化失败");
+        assert!(serialized_custom.contains("column_widths"));
+        let roundtrip: Settings = serde_json::from_str(&serialized_custom).expect("反序列化失败");
+        assert_eq!(roundtrip.column_widths, vec![147, 113, 170, 80, 160, 150]);
     }
 }

@@ -285,6 +285,7 @@ fn save(hwnd: HWND) {
         clipboard_clear_seconds: CLIP_VALUES.get(clip_index).copied().unwrap_or(20),
         bin_retention_days: BIN_VALUES.get(bin_index).copied().unwrap_or(30),
         always_on_top: app::state().settings.always_on_top,
+        column_widths: app::state().settings.column_widths.clone(),
     };
 
     // 设置加密写回库里(磁盘上不会出现额外的配置文件)。
