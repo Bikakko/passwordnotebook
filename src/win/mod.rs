@@ -125,37 +125,99 @@ fn find_main_window() -> Option<HWND> {
     unsafe { FindWindowW(class.pcwstr(), PCWSTR::null()) }.ok()
 }
 
-/// 程序是 GUI 子系统,默认没有控制台。自检模式挂到父进程的控制台上,
-/// 这样在终端里运行 `--selftest` 时仍能看到输出。
+/// 自检模式的控制台状态。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ConsoleState {
+    /// 输出有去处:挂到了父进程的控制台,或标准输出本就被重定向到文件/管道。
+    Ready,
+    /// 父进程没有控制台,我们自己开了一个窗口 —— 它随进程一起消失。
+    Allocated,
+    /// 拿不到任何控制台:调用方应当把结果写到文件并弹框告诉用户。
+    Missing,
+}
+
+/// 程序是 GUI 子系统,默认没有控制台。自检模式把输出接回终端,
+/// 让 `pnb.exe --selftest` 能在 cmd / PowerShell 里正常显示。
 ///
 /// 必须在任何 `println!` **之前**调用 —— Rust 会缓存标准输出的句柄。
-pub fn attach_parent_console() {
+///
+/// 这里踩过一个坑:命令行启动 GUI 程序时,系统会把父进程的标准句柄**原样继承**
+/// 过来。那个句柄值非空,但进程并没有附到那个控制台上,直接写会失败 ——
+/// 而 Rust 的 `println!` 写失败会 panic,release 下 `panic = "abort"`,
+/// 于是整个进程立刻消失,用户只看到「一闪就没了」。
+/// 所以判断依据不能是「句柄非空」,而必须是「句柄指向的是文件/管道」。
+pub fn prepare_console() -> ConsoleState {
+    use windows::Win32::System::Console::GetConsoleWindow;
+
+    unsafe {
+        // 已经被重定向到文件或管道:不要动它,否则会把用户指定的输出目标覆盖掉。
+        if stdout_is_redirected() {
+            return ConsoleState::Ready;
+        }
+
+        // 已经有控制台(例如在调试器里启动)就直接用。
+        if !GetConsoleWindow().is_invalid() {
+            return ConsoleState::Ready;
+        }
+
+        if windows::Win32::System::Console::AttachConsole(
+            windows::Win32::System::Console::ATTACH_PARENT_PROCESS,
+        )
+        .is_ok()
+        {
+            bind_console_handles();
+            return ConsoleState::Ready;
+        }
+
+        // 父进程没有控制台(双击启动、或被 IDE 拉起):自己开一个。
+        // 否则输出会写到上面那个「看着有效其实不可用」的句柄上。
+        if windows::Win32::System::Console::AllocConsole().is_ok() {
+            bind_console_handles();
+            return ConsoleState::Allocated;
+        }
+
+        ConsoleState::Missing
+    }
+}
+
+/// 标准输出是否被重定向到了文件或管道(区别于控制台字符设备)。
+fn stdout_is_redirected() -> bool {
+    use windows::Win32::Storage::FileSystem::{FILE_TYPE_CHAR, GetFileType};
+    use windows::Win32::System::Console::{GetStdHandle, STD_OUTPUT_HANDLE};
+
+    unsafe {
+        let Ok(handle) = GetStdHandle(STD_OUTPUT_HANDLE) else {
+            return false;
+        };
+        if handle.is_invalid() {
+            return false;
+        }
+        // 控制台是字符设备;文件是 FILE_TYPE_DISK,管道是 FILE_TYPE_PIPE。
+        GetFileType(handle) != FILE_TYPE_CHAR
+    }
+}
+
+/// 把标准输出/错误/输入接到当前控制台上。
+fn bind_console_handles() {
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::System::Console::{
-        AttachConsole, GetStdHandle, SetStdHandle, ATTACH_PARENT_PROCESS, STD_ERROR_HANDLE,
-        STD_OUTPUT_HANDLE,
+        SetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
     };
 
     unsafe {
-        // 若标准输出已经指向某个有效目标(例如被重定向到文件或管道),就不要动它 ——
-        // 否则会把已有的输出目标覆盖掉,反而什么都看不到。
-        if let Ok(handle) = GetStdHandle(STD_OUTPUT_HANDLE) {
-            if !handle.is_invalid() {
-                return;
-            }
-        }
-
-        // 双击启动时没有控制台;从终端启动时挂到父进程的控制台上。
-        if AttachConsole(ATTACH_PARENT_PROCESS).is_err() {
-            return;
-        }
-
         if let Ok(file) = std::fs::OpenOptions::new().write(true).open("CONOUT$") {
             let handle = HANDLE(file.as_raw_handle() as _);
             let _ = SetStdHandle(STD_OUTPUT_HANDLE, handle);
             let _ = SetStdHandle(STD_ERROR_HANDLE, handle);
             // 句柄必须一直有效,不能在这里关闭。
+            std::mem::forget(file);
+        }
+
+        // 输入也要接上:自检窗口需要「按回车键关闭」。
+        if let Ok(file) = std::fs::OpenOptions::new().read(true).open("CONIN$") {
+            let handle = HANDLE(file.as_raw_handle() as _);
+            let _ = SetStdHandle(STD_INPUT_HANDLE, handle);
             std::mem::forget(file);
         }
     }

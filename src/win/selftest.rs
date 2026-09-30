@@ -3,20 +3,68 @@
 //! 用法:`pnb.exe --selftest`
 //! 其中「窗口生命周期」一项专门用来验收「关闭后进程彻底退出」:
 //! 创建真实主窗口 → 定时自动关闭 → 消息循环退出 → 进程结束。
+//!
+//! 输出会同时写进程序目录下的 `selftest-report.txt`。这不是多余的:
+//! GUI 子系统程序在 PowerShell 里启动时,提示符不会等待,控制台也可能根本接不上,
+//! 只靠终端输出很容易变成「一闪就没了」,报告文件是唯一稳定的验收凭据。
+
+use std::io::Write;
+use std::sync::Mutex;
 
 use crate::model::Entry;
 use crate::vault::VaultService;
 use crate::vaultfile::VaultFile;
+
+/// 本次自检的完整输出(除了打印,还留一份好落盘)。
+static REPORT: Mutex<String> = Mutex::new(String::new());
+
+/// 报告文件名,放在数据库所在目录(通常是 exe 同目录)。
+const REPORT_FILE: &str = "selftest-report.txt";
+
+/// 记录一行输出:先进报告缓冲,再尽力打印到控制台。
+///
+/// 打印**刻意忽略错误**:控制台句柄可能是「看着有效其实不可用」的继承句柄,
+/// 用 `println!` 的话写失败会 panic,而 release 下是 `panic = "abort"` ——
+/// 进程会直接消失,连已经收集好的报告都来不及落盘。
+pub fn report_line(text: &str) {
+    if let Ok(mut report) = REPORT.lock() {
+        report.push_str(text);
+        report.push_str("\r\n");
+    }
+
+    let mut stdout = std::io::stdout();
+    let _ = stdout.write_all(text.as_bytes());
+    let _ = stdout.write_all(b"\r\n");
+    let _ = stdout.flush();
+}
+
+/// 本模块内的 `println!` 全部改走 [`report_line`],于是自动带上了报告副本。
+///
+/// 用同名宏覆盖标准库的 `println!` 是刻意的:自检里有上百处输出,
+/// 逐个改写既啰嗦又容易漏。作用域只限本模块。
+macro_rules! println {
+    () => { $crate::win::selftest::report_line("") };
+    ($($arg:tt)*) => { $crate::win::selftest::report_line(&::std::format!($($arg)*)) };
+}
+
+/// 把报告写到程序目录旁边,返回路径。
+fn write_report() -> Option<std::path::PathBuf> {
+    let path = crate::paths::data_dir().join(REPORT_FILE);
+    let text = REPORT.lock().ok()?.clone();
+    std::fs::write(&path, text).ok()?;
+    Some(path)
+}
 
 pub fn requested() -> bool {
     std::env::args().any(|a| a == "--selftest")
 }
 
 pub fn run() -> i32 {
-    // GUI 子系统下没有控制台,先把父进程的控制台接过来,后续 println! 才有地方输出。
-    super::attach_parent_console();
+    // GUI 子系统下没有控制台,先把输出接回终端,后续 println! 才有地方去。
+    let console = super::prepare_console();
 
     println!("=== Password Notebook 自检 ===");
+    println!("(完整报告同时写入程序目录下的 {REPORT_FILE})");
 
     println!("-- 路径(全部由 exe 位置推导,无硬编码)--");
     println!("  程序所在目录:{}", crate::paths::exe_dir().display());
@@ -165,14 +213,44 @@ pub fn run() -> i32 {
         failures += 1;
     }
 
-    println!();
-    if failures == 0 {
-        println!("结果:全部通过");
-        0
+    // 报告一定要落到文件里:终端输出在 PowerShell 下可能被提示符冲掉。
+    let summary = if failures == 0 {
+        "自检结果:全部通过".to_string()
     } else {
-        println!("结果:{failures} 项失败");
-        1
+        format!("自检结果:{failures} 项失败")
+    };
+    println!();
+    println!("{summary}");
+
+    let report_path = write_report();
+    let location = match &report_path {
+        Some(path) => path.display().to_string(),
+        None => "(报告文件写入失败)".to_string(),
+    };
+    println!("完整报告:{location}");
+
+    // 没有可用的控制台时(双击运行、或被没有终端的宿主拉起),
+    // 上面这些输出用户一个也看不到 —— 弹框告诉他结果与报告位置。
+    // 从终端运行时绝不弹框,免得打断脚本。
+    if console != super::ConsoleState::Ready {
+        let text = format!(
+            "{summary}\n\n完整报告已保存到:\n{location}\n\n(从终端运行 `pnb.exe --selftest` 可直接看到全部输出)"
+        );
+        super::ui::info(
+            windows::Win32::Foundation::HWND::default(),
+            &text,
+            "PasswordNotebook 自检",
+        );
     }
+
+    // 自己开的控制台窗口会随进程一起关闭,不等一下的话又是「一闪就没了」。
+    if console == super::ConsoleState::Allocated {
+        println!();
+        println!("按回车键关闭此窗口…");
+        let _ = std::io::stdin().read_line(&mut String::new());
+    }
+
+    if failures == 0 { 0 } else { 1 }
 }
 
 fn core_checks() -> usize {
