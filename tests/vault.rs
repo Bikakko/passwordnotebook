@@ -421,6 +421,128 @@ fn locked_service_refuses_operations() {
     assert!(matches!(vault.save().unwrap_err(), VaultError::Locked));
 }
 
+/// 让**下一次**落盘失败:把临时文件路径变成目录,`write_atomic` 在创建临时文件时
+/// 就失败,正式文件完好无损。返回那个目录,恢复可写后删掉即可。
+fn break_next_write(tv: &TempVault) -> PathBuf {
+    let tmp = tv.path.with_extension("pkk.tmp");
+    std::fs::create_dir(&tmp).unwrap();
+    tmp
+}
+
+/// 落盘失败要留下「未落盘」标记,界面据此如实提示而不是装作没事。
+#[test]
+fn a_failed_save_leaves_the_unsaved_marker() {
+    let tv = TempVault::new("dirty1");
+    tv.create(PASSWORD);
+
+    let mut vault = VaultService::new();
+    vault.open(&tv.path, PASSWORD).unwrap();
+    assert!(!vault.has_unsaved_changes(), "刚打开时内存与磁盘一致");
+
+    let tmp = break_next_write(&tv);
+    assert!(vault.add_entry(entry("A", "c", &[])).is_err());
+    assert!(vault.has_unsaved_changes(), "落盘失败后应标记为未落盘");
+
+    // 挡路的目录删掉,下一次成功的 save() 应当顺手清掉标记。
+    std::fs::remove_dir_all(&tmp).unwrap();
+    vault.save().unwrap();
+    assert!(!vault.has_unsaved_changes(), "补上一次成功落盘后标记应清除");
+}
+
+/// 锁定会连未落盘的改动一起丢掉,所以标记必须跟着 document 一起清 ——
+/// 否则重新解锁后会误报一条根本不存在的内容。
+#[test]
+fn locking_clears_the_unsaved_marker() {
+    let tv = TempVault::new("dirty2");
+    tv.create(PASSWORD);
+
+    let mut vault = VaultService::new();
+    vault.open(&tv.path, PASSWORD).unwrap();
+    let tmp = break_next_write(&tv);
+    assert!(vault.add_entry(entry("A", "c", &[])).is_err());
+    assert!(vault.has_unsaved_changes());
+
+    vault.lock();
+    assert!(!vault.has_unsaved_changes(), "锁定后不该残留未落盘标记");
+
+    std::fs::remove_dir_all(&tmp).unwrap();
+    vault.open(&tv.path, PASSWORD).unwrap();
+    assert!(!vault.has_unsaved_changes(), "重新解锁后磁盘即真相");
+    assert_eq!(vault.entry_count(), 0, "没落盘的改动确实随锁定丢了");
+}
+
+/// 只重包密钥槽的三条路径直接落盘 `file.payload`,不经过 `save()`。
+/// 若此刻内存里攒着未落盘的改动,那次写盘会把它们悄悄写旧内容覆盖掉 ——
+/// 必须先把待写内容落盘。
+#[test]
+fn a_password_change_does_not_discard_pending_changes() {
+    let tv = TempVault::new("dirty3");
+    tv.create(PASSWORD);
+
+    let mut vault = VaultService::new();
+    vault.open(&tv.path, PASSWORD).unwrap();
+    vault.add_entry(entry("已落盘", "c", &[])).unwrap();
+
+    // 让接下来的保存失败,攒下一条未落盘的改动。
+    let tmp = break_next_write(&tv);
+    assert!(vault.add_entry(entry("未落盘", "c", &[])).is_err());
+    assert!(vault.has_unsaved_changes());
+
+    // 挡路的目录删掉 —— 改密路径会先把待写内容落盘。
+    std::fs::remove_dir_all(&tmp).unwrap();
+    vault.change_master_password(PASSWORD, NEW_PASSWORD).unwrap();
+
+    assert!(
+        !vault.has_unsaved_changes(),
+        "改密前应先把待写内容落盘,标记随之清除"
+    );
+
+    // 关键断言:重开磁盘文件,「未落盘」那条必须还在。
+    let mut after = VaultService::new();
+    after.open(&tv.path, NEW_PASSWORD).unwrap();
+    let titles = set(&after.active_entries().map(|e| e.title.clone()).collect::<Vec<_>>());
+    assert_eq!(
+        titles,
+        set(&["已落盘".to_string(), "未落盘".to_string()]),
+        "改密不该把内存里待写的改动写丢"
+    );
+}
+
+/// 导入是「在副本上算好再提交」,落盘成功后它连之前所有未落盘的改动一并写出,
+/// 所以标记必须清掉(否则界面会一直提示有未保存内容)。
+#[test]
+fn a_successful_import_clears_the_unsaved_marker() {
+    let tv = TempVault::new("dirty4");
+    tv.create(PASSWORD);
+
+    let mut vault = VaultService::new();
+    vault.open(&tv.path, PASSWORD).unwrap();
+
+    let tmp = break_next_write(&tv);
+    assert!(vault.add_entry(entry("先失败", "c", &[])).is_err());
+    assert!(vault.has_unsaved_changes());
+    std::fs::remove_dir_all(&tmp).unwrap();
+
+    let incoming = vec![entry("导入的", "c", &[])];
+    vault
+        .import_entries(incoming, password_notebook::export_import::DuplicateStrategy::Append)
+        .unwrap();
+
+    assert!(
+        !vault.has_unsaved_changes(),
+        "导入落盘成功,应把之前未落盘的改动一起写出并清标记"
+    );
+
+    let mut after = VaultService::new();
+    after.open(&tv.path, PASSWORD).unwrap();
+    let titles = set(&after.active_entries().map(|e| e.title.clone()).collect::<Vec<_>>());
+    assert_eq!(
+        titles,
+        set(&["先失败".to_string(), "导入的".to_string()]),
+        "导入前的未落盘改动应被一并落盘"
+    );
+}
+
 /// 比较集合(顺序无关)。`known_*` 返回是排好序的,但中文的排序顺序不好预判。
 fn set<T: AsRef<str>>(names: &[T]) -> std::collections::BTreeSet<String> {
     names.iter().map(|s| s.as_ref().to_string()).collect()

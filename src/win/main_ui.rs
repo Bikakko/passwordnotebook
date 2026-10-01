@@ -964,13 +964,56 @@ fn update_status(hwnd: HWND) {
         .path()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
+    // 有改动没能落盘:必须一直挂在状态栏上,不能只在出错那一下弹个框。
+    // 这些改动**不丢数据**(下次任何一次成功保存都会一并写出),但会随锁定消失,
+    // 也不能说成「已保存」——两边都不能骗用户。
     ui::set_text(
         s.status,
         &format!(
-            "共 {total} 条,当前显示 {}{bin_part}{fav_part}  ·  {path}",
-            s.rows.len()
+            "共 {total} 条,当前显示 {}{bin_part}{fav_part}{}  ·  {path}",
+            s.rows.len(),
+            unsaved_note(),
         ),
     );
+}
+
+/// 「有改动未落盘」的提示片段;没有就返回空串。
+///
+/// 单拎出来是因为**每一条**状态栏文字都得带上它 ——「已复制密码」「已收藏」这类
+/// 临时反馈是直接 `set_text` 覆盖整行的,顺手就把警告抹掉了,而那正是最不该
+/// 消失的时刻(用户刚看到一条「保存失败」,下一手操作就把提示擦掉,等于没提示)。
+fn unsaved_note() -> &'static str {
+    if app::state().vault.has_unsaved_changes() {
+        "  ⚠ 有改动未能保存到磁盘,锁定或退出会丢失,请先解决磁盘写入失败"
+    } else {
+        ""
+    }
+}
+
+/// 覆盖状态栏显示一条临时反馈,并保留「未落盘」警告。
+fn flash_status(hwnd: HWND, message: &str) {
+    ui::set_text(st(hwnd).status, &format!("{message}{}", unsaved_note()));
+}
+
+/// 有未落盘改动时,先试着补一次保存;成功就当无事发生。
+///
+/// 返回 `false` 表示用户选择放弃(丢掉这些改动),调用方应当中止当前动作。
+fn confirm_discard_unsaved(hwnd: HWND, what: &str) -> bool {
+    if !app::state().vault.has_unsaved_changes() {
+        return true;
+    }
+    // 先给一次机会:很多时候失败是暂时的(杀软占住文件、同步冲突刚过去)。
+    match app::state().vault.save() {
+        Ok(()) => true,
+        Err(e) => ui::confirm(
+            hwnd,
+            &format!(
+                "有改动没能保存到磁盘({e})。\n\n{what}会丢掉这些改动,它们只存在于内存里。\n\
+                 仍然继续吗?(建议先检查磁盘空间与同步状态,必要时重启程序)"
+            ),
+            "改动尚未保存",
+        ),
+    }
 }
 
 fn selected_entry_id(hwnd: HWND) -> Option<String> {
@@ -1070,7 +1113,7 @@ pub fn on_command(hwnd: HWND, id: usize, code: u16) {
             refresh_list(hwnd);
             layout(hwnd);
         }
-        ID_LOCK_BTN if code == BN_CLICKED => lock_vault(hwnd),
+        ID_LOCK_BTN if code == BN_CLICKED => lock_vault(hwnd, true),
 
         // --- 回收站 ---
         ID_BIN_RESTORE_BTN if code == BN_CLICKED => {
@@ -1083,7 +1126,7 @@ pub fn on_command(hwnd: HWND, id: usize, code: u16) {
             };
             if let Some(id) = id {
                 if let Err(e) = app::state().vault.restore_from_bin(&id) {
-                    ui::error(hwnd, &e.to_string(), "恢复失败");
+                    report_op_failed(hwnd, &e, "恢复失败");
                 }
                 refresh_filters(hwnd);
                 refresh_bin(hwnd);
@@ -1100,7 +1143,7 @@ pub fn on_command(hwnd: HWND, id: usize, code: u16) {
             if let Some(id) = id {
                 if ui::confirm(hwnd, "彻底删除后无法恢复,确定继续吗?", "彻底删除") {
                     if let Err(e) = app::state().vault.purge(&id) {
-                        ui::error(hwnd, &e.to_string(), "删除失败");
+                        report_save_failed(hwnd, &e);
                     }
                     refresh_bin(hwnd);
                 }
@@ -1112,7 +1155,7 @@ pub fn on_command(hwnd: HWND, id: usize, code: u16) {
             }
             if ui::confirm(hwnd, "将彻底删除回收站中的所有记录,确定继续吗?", "清空回收站") {
                 if let Err(e) = app::state().vault.empty_bin() {
-                    ui::error(hwnd, &e.to_string(), "清空失败");
+                    report_op_failed(hwnd, &e, "清空失败");
                 }
                 refresh_bin(hwnd);
             }
@@ -1408,7 +1451,7 @@ fn category_add(hwnd: HWND) {
             refresh_filters(hwnd);
             refresh_list(hwnd);
         }
-        Err(e) => ui::error(hwnd, &e.to_string(), "新建分类失败"),
+        Err(e) => report_op_failed(hwnd, &e, "新建分类失败"),
     }
 }
 
@@ -1438,7 +1481,7 @@ fn category_rename(hwnd: HWND) {
             refresh_filters(hwnd);
             refresh_list(hwnd);
         }
-        Err(e) => ui::error(hwnd, &e.to_string(), "重命名失败"),
+        Err(e) => report_op_failed(hwnd, &e, "重命名失败"),
     }
 }
 
@@ -1468,7 +1511,12 @@ fn category_delete(hwnd: HWND) {
             refresh_filters(hwnd);
             refresh_list(hwnd);
         }
-        Err(e) => ui::error(hwnd, &e.to_string(), "删除失败"),
+        Err(e) => {
+            // 失败时分类其实已从内存里移除,要重绘才能与提示一致。
+            report_op_failed(hwnd, &e, "删除失败");
+            refresh_filters(hwnd);
+            refresh_list(hwnd);
+        }
     }
 }
 
@@ -1489,7 +1537,12 @@ fn move_selected_to_category(hwnd: HWND, category: String) {
             refresh_filters(hwnd);
             refresh_list(hwnd);
         }
-        Err(e) => ui::error(hwnd, &e.to_string(), "移动失败"),
+        Err(e) => {
+            // 内存里的分类已经改了,重绘一次才能与提示一致。
+            report_op_failed(hwnd, &e, "移动失败");
+            refresh_filters(hwnd);
+            refresh_list(hwnd);
+        }
     }
 }
 
@@ -1535,7 +1588,8 @@ pub fn on_timer(hwnd: HWND, id: usize) {
             }
             if let Some(timeout) = idle_timeout_seconds() {
                 if idle::idle_seconds() >= timeout {
-                    lock_vault(hwnd);
+                    // 空闲锁定不能弹窗打断,未落盘的改动只能靠状态栏提示。
+                    lock_vault(hwnd, false);
                 }
             }
         }
@@ -1583,7 +1637,8 @@ fn idle_timeout_seconds() -> Option<u64> {
 
 pub fn on_session_locked(hwnd: HWND) {
     if app::state().mode == Mode::Unlocked {
-        lock_vault(hwnd);
+        // 锁屏是系统事件,不能弹窗 —— 未落盘的改动会随这次锁定丢失。
+        lock_vault(hwnd, false);
     }
 }
 
@@ -1814,7 +1869,15 @@ fn create_vault(hwnd: HWND) {
     after_unlock(hwnd);
 }
 
-fn lock_vault(hwnd: HWND) {
+/// 锁定密码本。
+///
+/// `may_prompt` 只给**用户主动点的锁定按钮**为 true:空闲超时与锁屏都是系统事件,
+/// 那种时刻弹窗既没人在看、又会打断桌面切换,所以那两条路径只能靠状态栏上一直
+/// 挂着的提示让用户事先知道「有改动没存上」。
+fn lock_vault(hwnd: HWND, may_prompt: bool) {
+    if may_prompt && !confirm_discard_unsaved(hwnd, "锁定密码本") {
+        return;
+    }
     app::state().vault.lock();
     // 要求 Hello 时保留缓存并打标记(下次用指纹进入);否则删掉缓存(下次输密码)。
     dpapi::invalidate_on_lock();
@@ -1839,6 +1902,48 @@ fn lock_vault(hwnd: HWND) {
 
 // ---------- 条目操作 ----------
 
+/// 「保存失败」要说清改动去哪了。
+///
+/// 底层是「先改内存再落盘」:失败时改动**仍在内存里**,只是没写进磁盘文件 ——
+/// 说成「保存失败」会让用户以为白填了、于是重填一遍,或者以为改动没了。
+/// 底层标记(见 `VaultService::dirty`)已经如实记下这件事,这里如实转述。
+fn report_save_failed(hwnd: HWND, e: &crate::error::VaultError) {
+    report_op_failed(hwnd, e, "保存失败");
+}
+
+/// 同 [`report_save_failed`],但保留调用处更贴切的标题(如「恢复失败」「移动失败」)。
+///
+/// 这些操作同样走「先改内存再落盘」,失败时要给出一致的说明;标题只影响弹窗抬头,
+/// 「改动还在内存里」那一段必须每条路径都带上 —— 否则用户会以为这次改动白做了。
+fn report_op_failed(hwnd: HWND, e: &crate::error::VaultError, title: &str) {
+    ui::error(hwnd, &save_failure_text(e), title);
+}
+
+/// 保存失败的完整说明,供主界面弹窗与各对话框共用。
+///
+/// 只依据 `has_unsaved_changes()` 追加提醒 —— 该标记为真就说明内存里确实压着
+/// 没写进文件的内容,与触发它的具体是哪一个操作无关。
+pub(crate) fn save_failure_text(e: &crate::error::VaultError) -> String {
+    if app::state().vault.has_unsaved_changes() {
+        format!(
+            "{e}\n\n改动仍保留在内存里,尚未写入密码文件。\
+             请检查磁盘空间、目录权限或同步冲突,解决后重新保存任意一条即可一并写入。\
+             在那之前请不要锁定或退出程序。"
+        )
+    } else {
+        e.to_string()
+    }
+}
+
+/// 对话框错误栏空间有限时用的一句话版本(附在主错误信息后面)。
+pub(crate) fn save_failure_inline(e: &crate::error::VaultError) -> String {
+    if app::state().vault.has_unsaved_changes() {
+        format!("{e}  (改动已留在内存里,尚未写入文件)")
+    } else {
+        e.to_string()
+    }
+}
+
 /// 新建条目。工具栏按钮与右键菜单共用这一条路径 ——
 /// 之前只有「右键列表下方空白处」一个入口,列表铺满视口后就再也点不到新建了。
 fn new_entry(hwnd: HWND) {
@@ -1852,7 +1957,12 @@ fn new_entry(hwnd: HWND) {
             refresh_filters(hwnd);
             refresh_list(hwnd);
         }
-        Err(e) => ui::error(hwnd, &e.to_string(), "保存失败"),
+        Err(e) => {
+            // 条目已在内存里,重绘一次让列表反映出这条未落盘的改动。
+            report_save_failed(hwnd, &e);
+            refresh_filters(hwnd);
+            refresh_list(hwnd);
+        }
     }
 }
 
@@ -1872,7 +1982,12 @@ fn edit_selected(hwnd: HWND) {
                 refresh_filters(hwnd);
                 refresh_list(hwnd);
             }
-            Err(e) => ui::error(hwnd, &e.to_string(), "保存失败"),
+            Err(e) => {
+                // 改动已在内存里,重绘一次让列表反映出这条未落盘的修改。
+                report_save_failed(hwnd, &e);
+                refresh_filters(hwnd);
+                refresh_list(hwnd);
+            }
         }
     }
 }
@@ -1890,7 +2005,7 @@ fn delete_selected(hwnd: HWND) {
         return;
     }
     if let Err(e) = app::state().vault.move_to_bin(&id) {
-        ui::error(hwnd, &e.to_string(), "删除失败");
+        report_save_failed(hwnd, &e);
     }
     refresh_filters(hwnd);
     refresh_list(hwnd);
@@ -1903,13 +2018,17 @@ fn toggle_favorite_selected(hwnd: HWND) {
     match app::state().vault.toggle_favorite(&id) {
         Ok(true) => {
             refresh_list(hwnd);
-            ui::set_text(st(hwnd).status, "已收藏,列表中会置顶显示");
+            flash_status(hwnd, "已收藏,列表中会置顶显示");
         }
         Ok(false) => {
             refresh_list(hwnd);
-            ui::set_text(st(hwnd).status, "已取消收藏");
+            flash_status(hwnd, "已取消收藏");
         }
-        Err(e) => ui::error(hwnd, &e.to_string(), "操作失败"),
+        Err(e) => {
+            // 收藏状态已在内存里翻转,refresh_list 会重绘星标并同时刷新状态栏警告。
+            report_save_failed(hwnd, &e);
+            refresh_list(hwnd);
+        }
     }
 }
 
@@ -1928,18 +2047,20 @@ fn copy_password(hwnd: HWND) {
     let seconds = app::state().settings.clipboard_clear_seconds;
     clipboard::set_text(&password);
 
-    let s = st(hwnd);
-    if seconds > 0 {
-        s.clipboard_deadline = Some((
+    // 先把剪贴板截止时间写好并结束借用,再写状态栏 —— flash_status 内部会再
+    // 调一次 st(hwnd),不能与上面的 &mut 同时活着。
+    let message = if seconds > 0 {
+        st(hwnd).clipboard_deadline = Some((
             Instant::now() + Duration::from_secs(seconds as u64),
             password,
         ));
         ui::set_timer(hwnd, TIMER_CLIPBOARD, 1000);
-        ui::set_text(s.status, &format!("已复制密码,{seconds} 秒后自动清空剪贴板"));
+        format!("已复制密码,{seconds} 秒后自动清空剪贴板")
     } else {
-        s.clipboard_deadline = None;
-        ui::set_text(s.status, "已复制密码");
-    }
+        st(hwnd).clipboard_deadline = None;
+        "已复制密码".to_string()
+    };
+    flash_status(hwnd, &message);
 }
 
 fn copy_username(hwnd: HWND) {
@@ -1954,7 +2075,7 @@ fn copy_username(hwnd: HWND) {
         return;
     }
     clipboard::set_text(&username);
-    ui::set_text(st(hwnd).status, "已复制用户名");
+    flash_status(hwnd, "已复制用户名");
 }
 
 /// 复制网址。
@@ -1976,7 +2097,7 @@ fn copy_selected_url(hwnd: HWND) {
     }
 
     clipboard::set_text(&url);
-    ui::set_text(st(hwnd).status, "已复制网址");
+    flash_status(hwnd, "已复制网址");
 }
 
 /// 用系统默认浏览器打开选中条目的网址。
@@ -1998,12 +2119,16 @@ fn open_selected_url(hwnd: HWND) {
     }
 
     match ui::open_url_in_browser(&url) {
-        Ok(()) => ui::set_text(st(hwnd).status, "已在默认浏览器中打开网址"),
+        Ok(()) => flash_status(hwnd, "已在默认浏览器中打开网址"),
         Err(reason) => ui::info(hwnd, &reason, "无法打开网址"),
     }
 }
 
 pub fn confirm_exit(hwnd: HWND) -> bool {
+    // 有改动没能落盘时,退出等于彻底丢失(锁定也一样,但退出后再没有机会补存)。
+    if !confirm_discard_unsaved(hwnd, "退出程序") {
+        return false;
+    }
     // 关闭前把窗口位置/尺寸/最大化状态存进注册表,下次打开直接还原。
     if let Some(placement) = super::window_state::capture(hwnd) {
         super::window_state::save(&placement);

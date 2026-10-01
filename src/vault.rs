@@ -21,6 +21,17 @@ pub struct VaultService {
     document: Option<Document>,
     path: Option<PathBuf>,
     unlocked_with_recovery: bool,
+    /// 「内存里的库比磁盘新」——某次改动没能落盘。
+    ///
+    /// 大部分单条改动 API 是「先改内存再 `save()`」:`save()` 失败(磁盘满、杀软占住
+    /// 文件、OneDrive 同步冲突)时内存已经变了而磁盘没变。这些改动**不丢数据** ——
+    /// 下一次任何成功的 `save()` 都会把它们一并写出去 —— 但在那之前,界面上不能
+    /// 装作一切正常:用户看到「保存失败」就以为改动没了,重开程序却发现它其实在,
+    /// 或者反过来,以为已经落盘却发现重启后回退到旧内容。
+    ///
+    /// 所以不靠各个 API 自己回滚(那要各自克隆一份文档),而是如实把这个状态标记出来,
+    /// 让界面在状态栏持续提示,并在锁定/退出这类**真的会丢内存**的动作前拦一下。
+    dirty: bool,
 }
 
 impl Default for VaultService {
@@ -37,6 +48,7 @@ impl VaultService {
             document: None,
             path: None,
             unlocked_with_recovery: false,
+            dirty: false,
         }
     }
 
@@ -44,6 +56,11 @@ impl VaultService {
 
     pub fn is_unlocked(&self) -> bool {
         self.dek.is_some() && self.document.is_some() && self.file.is_some()
+    }
+
+    /// 内存里有没能落盘的改动:锁定会连它们一起丢掉(见 [`dirty`](Self) 字段说明)。
+    pub fn has_unsaved_changes(&self) -> bool {
+        self.dirty
     }
 
     pub fn document(&self) -> Option<&Document> {
@@ -63,6 +80,9 @@ impl VaultService {
         self.document = None;
         self.file = None;
         self.unlocked_with_recovery = false;
+        // 内存里的改动已经随 document 一起没了,标记要一起清掉,
+        // 否则重新解锁后会误报一条根本不存在的内容。
+        self.dirty = false;
     }
 
     /// 读取文件头(不需要解锁),用于判断本机免密缓存是否可用。
@@ -211,6 +231,8 @@ impl VaultService {
         self.document = Some(document);
         self.path = Some(path.to_path_buf());
         self.unlocked_with_recovery = false;
+        // 刚从磁盘读出来,内存与磁盘天然一致。
+        self.dirty = false;
         Ok(())
     }
 
@@ -229,6 +251,7 @@ impl VaultService {
         self.document = Some(document);
         self.path = Some(path.to_path_buf());
         self.unlocked_with_recovery = via_recovery;
+        self.dirty = false;
         Ok(())
     }
 
@@ -239,7 +262,25 @@ impl VaultService {
         let file = self.file.as_mut().ok_or(VaultError::Locked)?;
         let dek = self.dek.as_ref().ok_or(VaultError::Locked)?;
         let document = self.document.as_ref().ok_or(VaultError::Locked)?;
-        write_document(file, dek, &path, document)
+        let result = write_document(file, dek, &path, document);
+        // 落盘成功才清标记;失败时保持为「未落盘」,由界面如实提示。
+        if result.is_ok() {
+            self.dirty = false;
+        }
+        result
+    }
+
+    /// 「先改内存再落盘」的那批改动统一走这里收尾。
+    ///
+    /// 这些 API 改的是 `self.document`,失败时无法(也不打算)把内存退回去 ——
+    /// 见 [`dirty`](Self) 字段里为什么不各自克隆一份文档。这里只负责:
+    /// 落盘成功清标记,失败留下标记。
+    fn commit_in_place(&mut self) -> Result<()> {
+        let result = self.save();
+        if result.is_err() {
+            self.dirty = true;
+        }
+        result
     }
 
     /// 取出给本机免密缓存用的材料:(vault_id, key_generation, DEK 副本)。
@@ -253,6 +294,20 @@ impl VaultService {
         ))
     }
 
+    /// 只重包密钥槽的三个路径(改主密码 / 重设密码 / 重生成恢复码)会**直接落盘
+    /// `file.payload`** —— 它们不经过 [`save`],所以 `file.payload` 里还是上一次
+    /// 成功落盘时的内容。若此刻内存里攒着没能落盘的改动,这次写盘会把它们悄悄
+    /// 丢掉(界面提示过一次「保存失败」,用户以为只是这一次没存上)。
+    ///
+    /// 所以先试着把待写内容落盘:成功就顺手把标记清掉,之后写密钥槽写出去的
+    /// payload 就是最新的;失败则照常继续(密钥槽改密本身不依赖待写内容),
+    /// 标记保持不动。
+    fn flush_pending_before_slot_write(&mut self) {
+        if self.dirty {
+            let _ = self.save();
+        }
+    }
+
     // ---------- 主密码 ----------
 
     pub fn change_master_password(&mut self, current: &str, new: &str) -> Result<()> {
@@ -260,6 +315,8 @@ impl VaultService {
         if !Self::verify_master_password(&path, current) {
             return Err(VaultError::WrongSecret("当前主密码不正确。"));
         }
+
+        self.flush_pending_before_slot_write();
 
         let dek = Zeroizing::new(self.dek.as_ref().ok_or(VaultError::Locked)?.to_vec());
         let file = self.file.as_mut().ok_or(VaultError::Locked)?;
@@ -301,8 +358,11 @@ impl VaultService {
 
     /// 恢复码流程专用:在已知数据密钥的前提下重设主密码,不校验旧密码。
     ///
-    /// **失败即锁定**:本方法会先改动内存中的文件头,一旦中途出错就把库锁回去,
-    /// 避免留下「内存已解锁(DEK 仍在)、界面却仍认为锁定」的状态 —— 那种状态下
+    /// **失败即锁定**:出错就把库锁回去,不留明文 DEK 在内存里。
+    /// `reset_master_password_inner` 已经按「先算好再一次提交」写,失败不会污染
+    /// 内存头部,所以这里锁回去不再是替 `inner` 收拾残局,而是兜底:万一将来
+    /// 有人又往 `inner` 里塞了半成品改动,锁回去也仍然把 DEK 抹干净。
+    /// 那种「内存已解锁(DEK 仍在)、界面却仍认为锁定」的状态最危险 ——
     /// 空闲锁定与锁屏事件都会因 `mode != Unlocked` 而跳过 `vault.lock()`,
     /// 明文 DEK 会一直留到进程退出。
     pub fn reset_master_password(&mut self, new: &str) -> Result<()> {
@@ -315,27 +375,32 @@ impl VaultService {
 
     fn reset_master_password_inner(&mut self, new: &str) -> Result<()> {
         let path = self.path.clone().ok_or(VaultError::Locked)?;
+        self.flush_pending_before_slot_write();
         let dek = Zeroizing::new(self.dek.as_ref().ok_or(VaultError::Locked)?.to_vec());
         let file = self.file.as_mut().ok_or(VaultError::Locked)?;
 
-        file.header.password_salt = crypto::random_array()?;
-        file.header.password_nonce = crypto::random_array()?;
-        file.header.key_generation = file.header.key_generation.wrapping_add(1);
+        // 同 change_master_password:先在临时头部上把新槽位算好,中途任何一步失败
+        // 都不碰 self.file —— 否则内存头部会与磁盘对不上,之后一次 save() 就把
+        // 半成品写出去,主密码槽再也解不开。
+        let mut header = file.header.clone();
+        header.password_salt = crypto::random_array()?;
+        header.password_nonce = crypto::random_array()?;
+        header.key_generation = header.key_generation.wrapping_add(1);
 
-        let (m, t, p) = (file.header.m_cost_kib, file.header.t_cost, file.header.p_cost);
-        let aad = file.header.password_slot_aad();
-        file.password_wrapped = wrap_with_secret(
-            new.as_bytes(),
-            &file.header.password_salt,
-            &file.header.password_nonce,
-            &dek,
-            &aad,
-            m,
-            t,
-            p,
-        )?;
+        let (m, t, p) = (header.m_cost_kib, header.t_cost, header.p_cost);
+        let aad = header.password_slot_aad();
+        let wrapped = wrap_with_secret(new.as_bytes(), &header.password_salt, &header.password_nonce, &dek, &aad, m, t, p)?;
 
-        file.write_atomic(&path)?;
+        // 到这里才落到 self.file;写盘失败则整体回滚到改动前的状态。
+        let previous_header = std::mem::replace(&mut file.header, header);
+        let previous_wrapped = std::mem::replace(&mut file.password_wrapped, wrapped);
+
+        if let Err(e) = file.write_atomic(&path) {
+            file.header = previous_header;
+            file.password_wrapped = previous_wrapped;
+            return Err(e);
+        }
+
         self.unlocked_with_recovery = false;
         Ok(())
     }
@@ -343,6 +408,7 @@ impl VaultService {
     /// 重新生成恢复码,返回新码(旧码立即失效)。
     pub fn regenerate_recovery_code(&mut self) -> Result<String> {
         let path = self.path.clone().ok_or(VaultError::Locked)?;
+        self.flush_pending_before_slot_write();
         let dek = Zeroizing::new(self.dek.as_ref().ok_or(VaultError::Locked)?.to_vec());
         let file = self.file.as_mut().ok_or(VaultError::Locked)?;
 
@@ -454,7 +520,7 @@ impl VaultService {
         let document = self.document.as_mut().ok_or(VaultError::Locked)?;
         document.entries.push(entry);
         ensure_category(document, &category);
-        self.save()
+        self.commit_in_place()
     }
 
     pub fn update_entry(&mut self, entry: Entry) -> Result<()> {
@@ -477,7 +543,7 @@ impl VaultService {
         target.updated = now_secs();
 
         ensure_category(document, &category);
-        self.save()
+        self.commit_in_place()
     }
 
     pub fn move_to_bin(&mut self, id: &str) -> Result<()> {
@@ -489,7 +555,7 @@ impl VaultService {
             .find(|e| e.id == id)
             .ok_or(VaultError::NotFound)?;
         target.deleted = Some(now);
-        self.save()
+        self.commit_in_place()
     }
 
     pub fn restore_from_bin(&mut self, id: &str) -> Result<()> {
@@ -500,19 +566,19 @@ impl VaultService {
             .find(|e| e.id == id)
             .ok_or(VaultError::NotFound)?;
         target.deleted = None;
-        self.save()
+        self.commit_in_place()
     }
 
     pub fn purge(&mut self, id: &str) -> Result<()> {
         let document = self.document.as_mut().ok_or(VaultError::Locked)?;
         document.entries.retain(|e| e.id != id);
-        self.save()
+        self.commit_in_place()
     }
 
     pub fn empty_bin(&mut self) -> Result<()> {
         let document = self.document.as_mut().ok_or(VaultError::Locked)?;
         document.entries.retain(|e| !e.is_deleted());
-        self.save()
+        self.commit_in_place()
     }
 
     // ---------- 导入 / 导出 ----------
@@ -636,6 +702,9 @@ impl VaultService {
             let file = self.file.as_mut().ok_or(VaultError::Locked)?;
             let dek = self.dek.as_ref().ok_or(VaultError::Locked)?;
             write_document(file, dek, &path, &draft)?;
+            // draft 是从 self.document 克隆的,所以这一次落盘把之前所有没能落盘的
+            // 改动也一并写出去了 —— 标记可以清。
+            self.dirty = false;
         }
 
         // 到这里磁盘上要么已经是新内容,要么本来就没有变化 —— 才动内存。
@@ -657,7 +726,7 @@ impl VaultService {
             return Err(VaultError::Invalid("该分类已存在。".into()));
         }
         document.categories.push(name.to_string());
-        self.save()
+        self.commit_in_place()
     }
 
     pub fn rename_category(&mut self, old: &str, new: &str) -> Result<()> {
@@ -683,7 +752,7 @@ impl VaultService {
                 entry.category = new.to_string();
             }
         }
-        self.save()
+        self.commit_in_place()
     }
 
     /// 删除分类;用到它的条目退回「未分类」。
@@ -695,7 +764,7 @@ impl VaultService {
                 entry.category.clear();
             }
         }
-        self.save()
+        self.commit_in_place()
     }
 
     pub fn add_tag(&mut self, name: &str) -> Result<()> {
@@ -709,7 +778,7 @@ impl VaultService {
             return Err(VaultError::Invalid("该标签已存在。".into()));
         }
         document.tags.push(name.to_string());
-        self.save()
+        self.commit_in_place()
     }
 
     pub fn rename_tag(&mut self, old: &str, new: &str) -> Result<()> {
@@ -737,7 +806,7 @@ impl VaultService {
                 }
             }
         }
-        self.save()
+        self.commit_in_place()
     }
 
     /// 删除标签;同时把它从所有条目上摘掉。
@@ -747,14 +816,14 @@ impl VaultService {
         for entry in document.entries.iter_mut() {
             entry.tags.retain(|t| t != name);
         }
-        self.save()
+        self.commit_in_place()
     }
 
     /// 更新库内的设置(设置与条目一起加密保存)。
     pub fn update_settings(&mut self, settings: crate::model::Settings) -> Result<()> {
         let document = self.document.as_mut().ok_or(VaultError::Locked)?;
         document.settings = settings;
-        self.save()
+        self.commit_in_place()
     }
 
     /// 清理回收站中超过保留期的条目,返回删除数量。
@@ -777,7 +846,7 @@ impl VaultService {
         };
 
         if removed > 0 {
-            self.save()?;
+            self.commit_in_place()?;
         }
         Ok(removed)
     }
@@ -795,7 +864,7 @@ impl VaultService {
         target.favorite = !target.favorite;
         target.updated = now_secs();
         let favorite = target.favorite;
-        self.save()?;
+        self.commit_in_place()?;
         Ok(favorite)
     }
 }

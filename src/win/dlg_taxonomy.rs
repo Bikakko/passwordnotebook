@@ -272,6 +272,12 @@ fn on_command(hwnd: HWND, id: usize, code: u16) {
             ui::set_text(st(hwnd).error, "");
             refresh(hwnd);
         }
-        Err(e) => ui::set_text(st(hwnd).error, &e.to_string()),
+        // 失败信息带上「改动已留在内存里」的提醒:这里的增删改同样走「先改内存
+        // 再落盘」,写盘失败时改动没丢,只是没进文件 —— 对话框里也要说清楚。
+        // 保存失败时内存里其实已经改了,重绘一次让列表与内存一致。
+        Err(e) => {
+            ui::set_text(st(hwnd).error, &super::main_ui::save_failure_inline(&e));
+            refresh(hwnd);
+        }
     }
 }

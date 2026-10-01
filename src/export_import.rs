@@ -34,6 +34,53 @@ pub const CSV_HEADER: [&str; 7] = ["Title", "Username", "Password", "Url", "Cate
 /// 标签在 CSV 单元格内的分隔符(`|` 也接受)。
 pub const TAG_SEPARATOR: char = ';';
 
+/// 单次导入允许的最大文件体积(64 MiB)。
+///
+/// 导入全程是「整份读进内存 → 展开成 `Vec<Vec<String>>` → 再逐行转成条目」,
+/// 峰值内存约为文件体积的好几倍。个人密码管理器实际用到的文件通常在几百 KB,
+/// 这个上限留了两个数量级的余量,但能挡住误选到一个超大文件 / 被构造的输入
+/// 把内存撑爆(release 构建 `panic = "abort"`,耗尽时是直接退出,没有提示)。
+pub const MAX_IMPORT_BYTES: u64 = 64 * 1024 * 1024;
+
+/// 单次导入允许的最大条目数。
+///
+/// 与体积上限互补:体积够小也能塞下海量空行 / 极短行(几百万条「只有一个字符的行」),
+/// 而每条都要变成一个 `Entry`,构造它们的开销远超文件本身。
+pub const MAX_IMPORT_ENTRIES: usize = 100_000;
+
+/// 体积上限的提示文案(带上实际大小,方便判断是超了一点还是差很远)。
+fn too_large(actual: u64) -> VaultError {
+    VaultError::Invalid(format!(
+        "文件太大了({}),单个文件最多支持 {}。请确认选中的确实是导出的密码文件。",
+        human_size(actual),
+        human_size(MAX_IMPORT_BYTES),
+    ))
+}
+
+fn too_many_entries(actual: usize) -> VaultError {
+    VaultError::Invalid(format!(
+        "文件里的条目太多了({} 条),一次最多导入 {} 条。",
+        actual, MAX_IMPORT_ENTRIES
+    ))
+}
+
+/// 把字节数说成人话,避免界面里出现「62914560 字节」这种没法判断的数字。
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    // 整数值不打小数点(B / KB 走这条路),否则保留一位。
+    if value >= 10.0 || value.fract() == 0.0 {
+        format!("{value:.0} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
 /// 导出格式。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
@@ -170,7 +217,15 @@ pub fn export_to_path(
 ///
 /// 编码只接受 UTF-8(带不带 BOM 都行)。Excel 在中文 Windows 上默认另存为 GBK,
 /// 那种文件会得到一个明确的错误提示,而不是一堆乱码条目 —— 见 `docs/limitations.md`。
+///
+/// 体积上限在**读取之前**按文件元数据判断,不合规的文件一个字节都不会进内存;
+/// 判断不了大小(文件刚被删、网络盘、某些文件系统不填 `len`)就放行,
+/// 由 [`parse`] 里的条数上限兜底。
 pub fn import_from_path(path: &Path) -> Result<Vec<Entry>> {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_file() && meta.len() > MAX_IMPORT_BYTES => return Err(too_large(meta.len())),
+        _ => {}
+    }
     // 文件内容是明文(可能含密码),读完立刻纳入 Zeroizing 管理。
     let bytes = Zeroizing::new(std::fs::read(path)?);
     let text = decode_utf8(bytes.as_slice())?;
@@ -178,10 +233,17 @@ pub fn import_from_path(path: &Path) -> Result<Vec<Entry>> {
 }
 
 /// 按内容解析导入文本;`hint` 为 `None` 时自动判断 JSON / CSV。
+///
+/// 体积上限在这里**也**判一次,而不是只靠 [`import_from_path`]:调用方可能已经
+/// 把内容读进内存(自检、将来的粘贴导入),那时再判体积只是拒绝得快一点,
+/// 但至少不会一路解析到底。
 pub fn parse(text: &str, hint: Option<Format>) -> Result<Vec<Entry>> {
     let trimmed = text.trim_start_matches('\u{feff}');
     if trimmed.trim().is_empty() {
         return Err(VaultError::Invalid("文件里没有任何内容。".into()));
+    }
+    if text.len() as u64 > MAX_IMPORT_BYTES {
+        return Err(too_large(text.len() as u64));
     }
     match hint.unwrap_or_else(|| detect_format(trimmed)) {
         Format::Json => parse_json(trimmed),
@@ -433,7 +495,7 @@ fn normalize_key(raw: &str) -> String {
 }
 
 fn parse_csv(text: &str) -> Result<Vec<Entry>> {
-    let records = parse_csv_records(text);
+    let records = parse_csv_records(text)?;
     let header_index = records
         .iter()
         .position(|r| r.iter().any(|c| !c.trim().is_empty()))
@@ -461,6 +523,10 @@ fn parse_csv(text: &str) -> Result<Vec<Entry>> {
         let entry = entry_from_row(&header, record, unguard);
         if is_blank_entry(&entry) {
             continue;
+        }
+        if out.len() == MAX_IMPORT_ENTRIES {
+            // 只往后看这一个真实条目就收手,不再为剩下的行分配 Entry。
+            return Err(too_many_entries(out.len() + 1));
         }
         out.push(entry);
     }
@@ -569,12 +635,30 @@ pub(crate) fn is_blank_entry(entry: &Entry) -> bool {
 }
 
 /// RFC 4180 解析器,额外容忍 BOM、CRLF/CR/LF 与字段内换行。
-fn parse_csv_records(text: &str) -> Vec<Vec<String>> {
+///
+/// 返回 `Err` 而不是无限膨胀:这个函数先把**整个文件**展开成 `Vec<Vec<String>>`,
+/// 那是导入链路上最占内存的一步(之后才逐行转成 `Entry`)。正文行数在这里就卡住,
+/// 于是即使调用方([`parse`])拿到的文本已经绕过 [`import_from_path`] 的体积检查,
+/// 也不会被一个几百万行的 CSV 拖垮。表头不计入上限。
+fn parse_csv_records(text: &str) -> Result<Vec<Vec<String>>> {
     let mut records: Vec<Vec<String>> = Vec::new();
     let mut record: Vec<String> = Vec::new();
     let mut field = String::new();
     let mut in_quotes = false;
+    // 已展开的行数,含表头与空行 —— 空行也占预算,理由见下面的注释。
+    let mut rows = 0usize;
     let mut chars = text.trim_start_matches('\u{feff}').chars().peekable();
+
+    let take_row =
+        |records: &mut Vec<Vec<String>>, record: &mut Vec<String>, rows: &mut usize| -> Result<()> {
+            *rows += 1;
+            // 第 1 行当表头不计,所以实际放行的是「上限 + 表头」这么多行。
+            if *rows > MAX_IMPORT_ENTRIES + 1 {
+                return Err(too_many_entries(*rows - 1));
+            }
+            records.push(std::mem::take(record));
+            Ok(())
+        };
 
     while let Some(c) = chars.next() {
         if in_quotes {
@@ -599,7 +683,11 @@ fn parse_csv_records(text: &str) -> Vec<Vec<String>> {
                     chars.next();
                 }
                 record.push(std::mem::take(&mut field));
-                records.push(std::mem::take(&mut record));
+                // 空行同样占预算:一个 64 MB 的纯换行文件能撑出六千多万个
+                // Vec<String>,而它们最终一条条目都变不出来。若只统计非空行,
+                // 这档输入会被原样放过去 —— 体积上限挡不住它(csv_row_limit_
+                // counts_blank_lines_too 那条测试正是这个场景)。
+                take_row(&mut records, &mut record, &mut rows)?;
             }
             _ => field.push(c),
         }
@@ -607,9 +695,9 @@ fn parse_csv_records(text: &str) -> Vec<Vec<String>> {
 
     if !field.is_empty() || !record.is_empty() {
         record.push(field);
-        records.push(record);
+        take_row(&mut records, &mut record, &mut rows)?;
     }
-    records
+    Ok(records)
 }
 
 fn parse_json(text: &str) -> Result<Vec<Entry>> {
@@ -638,6 +726,9 @@ fn parse_json(text: &str) -> Result<Vec<Entry>> {
         let entry = entry_from_object(map);
         if is_blank_entry(&entry) {
             continue;
+        }
+        if out.len() == MAX_IMPORT_ENTRIES {
+            return Err(too_many_entries(out.len() + 1));
         }
         out.push(entry);
     }
@@ -1179,10 +1270,86 @@ mod tests {
     #[test]
     fn csv_parser_handles_embedded_newlines_and_quotes() {
         let text = "Title,Notes\n\"多行\",\"第一行\n第二行\"\n\"引号\"\"内部\",x\n";
-        let records = parse_csv_records(text);
+        let records = parse_csv_records(text).unwrap();
         assert_eq!(records.len(), 3);
         assert_eq!(records[1][1], "第一行\n第二行");
         assert_eq!(records[2][0], "引号\"内部");
+    }
+
+    #[test]
+    fn human_size_reads_as_human_units() {
+        assert_eq!(human_size(512), "512 B");
+        assert_eq!(human_size(1024), "1 KB");
+        assert_eq!(human_size(MAX_IMPORT_BYTES), "64 MB");
+    }
+
+    /// 空行也要占条数预算 —— 否则一整个 64 MB 的纯换行文件能撑出六千多万个
+    /// `Vec<String>`,而体积上限刚好放它过关(六千多万条空行变不出任何条目)。
+    #[test]
+    fn csv_row_limit_counts_blank_lines_too() {
+        let mut text = String::from("Title,Username\n");
+        for _ in 0..(MAX_IMPORT_ENTRIES + 10) {
+            text.push('\n');
+        }
+        text.push_str("A,a\n");
+        let err = parse(&text, Some(Format::Csv)).unwrap_err();
+        assert!(
+            err.to_string().contains("条目太多"),
+            "空行也必须计入上限,否则空行绕过预算:{err}"
+        );
+    }
+
+    /// 上限内的空行仍然是容忍的 —— 上限是「超过就拒绝」,不是「见到空行就拒绝」。
+    #[test]
+    fn csv_tolerates_blank_lines_under_the_limit() {
+        let text = "Title,Username\n\nA,a\n\n\nB,b\n";
+        let entries = parse(text, Some(Format::Csv)).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].title, "A");
+        assert_eq!(entries[1].title, "B");
+    }
+
+    #[test]
+    fn csv_over_the_entry_limit_is_refused() {
+        let mut text = String::from("Title,Username\n");
+        for i in 0..(MAX_IMPORT_ENTRIES + 1) {
+            text.push_str(&format!("entry-{i},user-{i}\n"));
+        }
+        let err = parse(&text, Some(Format::Csv)).unwrap_err();
+        assert!(err.to_string().contains("条目太多"), "{err}");
+    }
+
+    /// 上限必须落在**展开记录**这一步,而不是只拦最终的 Entry ——
+    /// 否则一个几百万行的 CSV 已经把内存吃掉了,再报错也来不及。
+    #[test]
+    fn csv_record_expansion_stops_at_the_row_limit() {
+        let mut text = String::from("Title,Username\n");
+        for i in 0..(MAX_IMPORT_ENTRIES + 5) {
+            text.push_str(&format!("e{i},u{i}\n"));
+        }
+        let err = parse_csv_records(&text).unwrap_err();
+        assert!(err.to_string().contains("条目太多"), "{err}");
+    }
+
+    #[test]
+    fn json_over_the_entry_limit_is_refused() {
+        let items: Vec<String> = (0..MAX_IMPORT_ENTRIES + 1)
+            .map(|i| format!(r#"{{"title":"e{i}","username":"u{i}"}}"#))
+            .collect();
+        let text = format!("[{}]", items.join(","));
+        let err = parse(&text, Some(Format::Json)).unwrap_err();
+        assert!(err.to_string().contains("条目太多"), "{err}");
+    }
+
+    /// 刚好卡在上限的文件要能正常导入 —— 上限是「拒绝超过」,不是「拒绝达到」。
+    #[test]
+    fn exactly_at_the_entry_limit_is_accepted() {
+        let mut text = String::from("Title,Username\n");
+        for i in 0..MAX_IMPORT_ENTRIES {
+            text.push_str(&format!("e{i},u{i}\n"));
+        }
+        let entries = parse(&text, Some(Format::Csv)).unwrap();
+        assert_eq!(entries.len(), MAX_IMPORT_ENTRIES);
     }
 
     #[test]

@@ -103,17 +103,32 @@ impl ListFilter<'_> {
 ///
 /// 收藏优先于命中质量是有意为之:收藏是用户显式表达的「常用」,不该被一次
 /// 临时的搜索压下去。
+///
+/// 评分**每条只算一次**再排序,而不是在比较函数里现算:`match_score` 每次调用
+/// 都要把标题/账号/网址/标签/分类/备注各 `to_lowercase()` 一遍(最多 6 次分配),
+/// 而比较次数是 O(n log n) —— 直接在闭包里算等于把同样的字符串转换重复几十遍。
+/// 「装饰-排序-写回」也保持了对相等元素的稳定顺序,与原先 `sort_by` 的结果一致。
 pub fn sort_entries(entries: &mut [&Entry], mode: SortMode, query: &str) {
-    entries.sort_by(|a, b| {
-        b.favorite
-            .cmp(&a.favorite)
-            .then_with(|| match_score(b, query).cmp(&match_score(a, query)))
+    let mut keyed: Vec<(bool, i32, &Entry)> = entries
+        .iter()
+        .copied()
+        .map(|e| (e.favorite, match_score(e, query), e))
+        .collect();
+
+    keyed.sort_by(|(a_fav, a_score, a), (b_fav, b_score, b)| {
+        b_fav
+            .cmp(a_fav)
+            .then_with(|| b_score.cmp(a_score))
             .then_with(|| match mode {
                 SortMode::Title => a.title.cmp(&b.title),
                 SortMode::Category => a.category.cmp(&b.category).then(a.title.cmp(&b.title)),
                 SortMode::Updated => b.updated.cmp(&a.updated),
             })
     });
+
+    for (slot, (_, _, entry)) in entries.iter_mut().zip(keyed) {
+        *slot = entry;
+    }
 }
 
 #[cfg(test)]
@@ -323,5 +338,120 @@ mod tests {
         assert!(!filter.accept(&personal));
         // 「未分类」的条目只在「全部」页签出现,不会被任何分类页签收进来。
         assert!(!filter.accept(&uncategorized));
+    }
+
+    /// 装饰-排序写回后,顺序必须与「比较函数里现算评分」完全一致 ——
+    /// 否则用户会看到搜索/排序结果在重构前后悄悄变样。
+    #[test]
+    fn sort_is_identical_to_computing_the_score_in_the_comparator() {
+        let entries: Vec<Entry> = (0..40)
+            .map(|i| {
+                let mut e = entry(&format!("标题-{:02}", i), &format!("user{i}"));
+                e.favorite = i % 5 == 0;
+                e.category = ["工作", "个人", ""][i % 3].into();
+                e.updated = (i * 7) as i64;
+                e
+            })
+            .collect();
+
+        for mode in [SortMode::Updated, SortMode::Title, SortMode::Category] {
+            for query in ["", "user1", "标题", "zzz"] {
+                let mut actual: Vec<&Entry> = entries.iter().collect();
+                sort_entries(&mut actual, mode, query);
+
+                // 旧写法的直译,作为对照。
+                let mut expected: Vec<&Entry> = entries.iter().collect();
+                expected.sort_by(|a, b| {
+                    b.favorite
+                        .cmp(&a.favorite)
+                        .then_with(|| match_score(b, query).cmp(&match_score(a, query)))
+                        .then_with(|| match mode {
+                            SortMode::Title => a.title.cmp(&b.title),
+                            SortMode::Category => a.category.cmp(&b.category).then(a.title.cmp(&b.title)),
+                            SortMode::Updated => b.updated.cmp(&a.updated),
+                        })
+                });
+
+                let actual_ptrs: Vec<*const Entry> = actual.iter().map(|e| *e as *const _).collect();
+                let expected_ptrs: Vec<*const Entry> = expected.iter().map(|e| *e as *const _).collect();
+                assert_eq!(
+                    actual_ptrs, expected_ptrs,
+                    "mode={mode:?} query={query:?} 排序结果与旧写法不一致"
+                );
+            }
+        }
+    }
+
+    /// 同上,但用**随机数据**跑,并刻意让绝大多数条目在所有比较维度上都相等 ——
+    /// 全等平局正是稳定排序最容易悄悄变样的地方,固定用例不容易碰到。
+    #[test]
+    fn sort_matches_the_old_way_on_randomized_tied_data() {
+        // 极简 LCG:随机性只用来生成用例,不值得为它引一个依赖。
+        struct Rng(u64);
+        impl Rng {
+            fn below(&mut self, n: usize) -> usize {
+                self.0 = self
+                    .0
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (self.0 >> 33) as usize % n
+            }
+        }
+
+        // 词表刻意很小,保证大量条目在标题/分类/评分上完全打平。
+        const WORDS: [&str; 5] = ["a", "A", "b", "B", "中文"];
+        let mut rng = Rng(0x2026_1001);
+
+        for round in 0..60 {
+            let n = rng.below(40) + 1;
+            let entries: Vec<Entry> = (0..n)
+                .map(|_| Entry {
+                    title: WORDS[rng.below(WORDS.len())].into(),
+                    username: WORDS[rng.below(WORDS.len())].into(),
+                    password: zeroize::Zeroizing::new(WORDS[rng.below(WORDS.len())].to_string()),
+                    url: WORDS[rng.below(WORDS.len())].into(),
+                    category: WORDS[rng.below(WORDS.len())].into(),
+                    tags: vec![WORDS[rng.below(WORDS.len())].into()],
+                    notes: WORDS[rng.below(WORDS.len())].into(),
+                    favorite: rng.below(2) == 0,
+                    created: rng.below(3) as i64,
+                    updated: rng.below(3) as i64,
+                    ..Default::default()
+                })
+                .collect();
+
+            for mode in [SortMode::Updated, SortMode::Title, SortMode::Category] {
+                for query in ["", "a", "中文", "zzz"] {
+                    let mut actual: Vec<&Entry> = entries.iter().collect();
+                    sort_entries(&mut actual, mode, query);
+
+                    let mut expected: Vec<&Entry> = entries.iter().collect();
+                    expected.sort_by(|a, b| {
+                        b.favorite
+                            .cmp(&a.favorite)
+                            .then_with(|| match_score(b, query).cmp(&match_score(a, query)))
+                            .then_with(|| match mode {
+                                SortMode::Title => a.title.cmp(&b.title),
+                                SortMode::Category => a.category.cmp(&b.category).then(a.title.cmp(&b.title)),
+                                SortMode::Updated => b.updated.cmp(&a.updated),
+                            })
+                    });
+
+                    let a: Vec<*const Entry> = actual.iter().map(|e| *e as *const Entry).collect();
+                    let b: Vec<*const Entry> = expected.iter().map(|e| *e as *const Entry).collect();
+                    assert_eq!(a, b, "round={round} n={n} mode={mode:?} query={query:?} 顺序不一致");
+                }
+            }
+        }
+    }
+
+    /// 排序是就地写回:调用方传进来的 `&mut [&Entry]` 本身要变成新顺序。
+    #[test]
+    fn sort_entries_rewrites_the_callers_slice() {
+        let a = entry("zebra", "");
+        let b = entry("apple", "");
+        let mut list: Vec<&Entry> = vec![&a, &b];
+        sort_entries(&mut list, SortMode::Title, "");
+        assert_eq!(titles(&list), vec!["apple".to_string(), "zebra".to_string()]);
     }
 }

@@ -640,6 +640,53 @@ fn import_from_path_rejects_unrecognized_csv() {
     assert!(err.to_string().contains("表头"));
 }
 
+/// 体积上限在**读取之前**生效:超限文件的内容不该被读进内存,报错要说明大小与上限。
+#[test]
+fn import_from_path_refuses_an_oversized_file() {
+    use std::io::Write;
+
+    let tmp = TempDir::new("toolarge");
+    let file = tmp.join("huge.csv");
+    let mut writer = std::io::BufWriter::new(std::fs::File::create(&file).unwrap());
+    writer.write_all(b"Title,Username\n").unwrap();
+    // 一行标题很短,但行数够多 —— 体积先撞上限,条数还没到。
+    let chunk = "x,yyyyyyyy\n";
+    let writes = export_import::MAX_IMPORT_BYTES / chunk.len() as u64 + 16;
+    for _ in 0..writes {
+        writer.write_all(chunk.as_bytes()).unwrap();
+    }
+    writer.flush().unwrap();
+    drop(writer);
+
+    let actual = std::fs::metadata(&file).unwrap().len();
+    assert!(
+        actual > export_import::MAX_IMPORT_BYTES,
+        "测试文件应超过上限,实际 {actual}"
+    );
+
+    let err = export_import::import_from_path(&file).unwrap_err();
+    let message = err.to_string();
+    assert!(message.contains("太大了"), "{message}");
+    // 错误信息里应是可读的大小,而不是裸字节数。
+    assert!(message.contains("MB"), "{message}");
+}
+
+/// 非法 UTF-8 与体积上限的判定顺序:超限优先(读都没读,谈不上编码)。
+#[test]
+fn oversized_file_is_refused_before_decoding() {
+    let tmp = TempDir::new("toobiggarbage");
+    let file = tmp.join("huge.csv");
+    // 用稀疏文件快速造出超限体积,内容随便填。
+    let handle = std::fs::File::create(&file).unwrap();
+    handle
+        .set_len(export_import::MAX_IMPORT_BYTES + 1)
+        .unwrap();
+    drop(handle);
+
+    let err = export_import::import_from_path(&file).unwrap_err();
+    assert!(err.to_string().contains("太大了"), "{err}");
+}
+
 #[test]
 fn csv_import_of_third_party_export_lands_in_the_vault() {
     let tmp = TempDir::new("thirdparty");

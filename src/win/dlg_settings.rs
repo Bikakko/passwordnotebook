@@ -311,7 +311,8 @@ fn save(hwnd: HWND) {
 
     // 设置加密写回库里(磁盘上不会出现额外的配置文件)。
     if let Err(e) = app::state().vault.update_settings(updated.clone()) {
-        ui::set_text(st(hwnd).error, &e.to_string());
+        // 写盘失败时设置已改在内存里,只是没进文件 —— 这里也要如实说明。
+        ui::set_text(st(hwnd).error, &super::main_ui::save_failure_inline(&e));
         return;
     }
     app::state().settings = updated.clone();

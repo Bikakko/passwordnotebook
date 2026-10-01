@@ -456,6 +456,32 @@ fn core_checks() -> usize {
         settings.idle_lock_minutes = 7;
         settings.column_widths = vec![147, 113, 170, 80, 160, 150];
         check!("设置写入库内", unlocked.update_settings(settings).is_ok());
+
+        // 「未落盘」标记:挡掉下一次写盘,改动应留在内存里并被如实标记。
+        check!("正常操作后没有未落盘标记", !unlocked.has_unsaved_changes());
+        let blocked = path.with_extension("pkk.tmp");
+        let _ = std::fs::remove_file(&blocked);
+        std::fs::create_dir(&blocked).ok();
+        let mut late = Entry {
+            title: "未落盘".into(),
+            username: "bob".into(),
+            ..Default::default()
+        };
+        late.id = Entry::new_id().unwrap_or_default();
+        check!("写盘失败时不报错地记住失败", unlocked.add_entry(late).is_err());
+        check!("写盘失败后标记为未落盘", unlocked.has_unsaved_changes());
+        check!("未落盘的改动仍在内存里", unlocked.entry_count() == 1);
+        std::fs::remove_dir(&blocked).ok();
+        check!("补一次保存即清除标记", unlocked.save().is_ok() && !unlocked.has_unsaved_changes());
+        // 这条条目只是用来验证 dirty 标记的,但上面那次 save() 已经把它落盘了。
+        // 不清理的话它会留在库里,让后面 transfer 段的导出/导入检查凭空多出一条
+        // ——实测正是这一条让「CSV 导出带 BOM」「JSON 备份可导入」「重复导入幂等」
+        // 三项一起误报 FAIL(0.2.0 没有这段自检,所以当时是通的)。
+        let late_id = unlocked.active_entries().next().map(|e| e.id.clone());
+        check!(
+            "自检用的临时条目已清掉(不影响后续导出检查)",
+            late_id.is_some_and(|id| unlocked.purge(&id).is_ok()) && unlocked.entry_count() == 0
+        );
     }
 
     check!("新登录密码可用", VaultService::new().open(&path, NEW_PWD).is_ok());
@@ -522,23 +548,41 @@ fn core_checks() -> usize {
             };
             let _ = source.add_entry(item);
 
-            let exported = source.document().map(|doc| {
-                (
-                    export_import::export_to_path(doc, &csv_path, Format::Csv, ExportOptions::default())
-                        .is_ok(),
-                    export_import::export_to_path(doc, &json_path, Format::Json, ExportOptions::default())
-                        .is_ok(),
-                )
+            let csv_export = source.document().map(|doc| {
+                export_import::export_to_path(doc, &csv_path, Format::Csv, ExportOptions::default())
+            });
+            let json_export = source.document().map(|doc| {
+                export_import::export_to_path(doc, &json_path, Format::Json, ExportOptions::default())
             });
 
-            let csv_reparsed = export_import::import_from_path(&csv_path).unwrap_or_default();
-            check!(
-                "CSV 导出带 BOM 且能被自己重新解析",
-                exported == Some((true, true))
-                    && csv_reparsed.len() == 1
-                    && csv_reparsed[0].title == "导出用,含逗号"
-                    && csv_reparsed[0].password.as_str() == "p,w\"d"
-            );
+            let csv_read = export_import::import_from_path(&csv_path);
+            let csv_ok = matches!(&csv_read, Ok(entries)
+                if entries.len() == 1
+                    && entries[0].title == "导出用,含逗号"
+                    && entries[0].password.as_str() == "p,w\"d");
+            let csv_check_ok = csv_export.as_ref().is_some_and(|r| r.is_ok())
+                && json_export.as_ref().is_some_and(|r| r.is_ok())
+                && csv_ok;
+            if !csv_check_ok {
+                // 自检是诊断工具:失败时把真正的原因打出来,而不是只报一个 FAIL。
+                // 这一步只碰文件读写,失败几乎总是「写下去的文件没能读回来」。
+                if let Some(Err(e)) = &csv_export {
+                    println!("        诊断:CSV 导出失败:{e}");
+                }
+                if let Some(Err(e)) = &json_export {
+                    println!("        诊断:JSON 导出失败:{e}");
+                }
+                match &csv_read {
+                    Ok(entries) => println!("        诊断:CSV 重新解析得到 {} 条", entries.len()),
+                    Err(e) => println!("        诊断:CSV 重新解析失败:{e}"),
+                }
+                println!(
+                    "        诊断:{} 存在 = {}",
+                    csv_path.display(),
+                    csv_path.exists()
+                );
+            }
+            check!("CSV 导出带 BOM 且能被自己重新解析", csv_check_ok);
         } else {
             // 上游没建起来就别说「导出失败」——那是两回事。
             println!("  SKIP  CSV / JSON 导出(上游「打开密码本」未通过)");
@@ -551,17 +595,19 @@ fn core_checks() -> usize {
         if target_ready {
             let first = export_import::import_from_path(&json_path)
                 .map(|entries| target.import_entries(entries, DuplicateStrategy::Skip));
-            check!(
-                "JSON 备份可导入到另一个密码本",
-                matches!(first, Ok(Ok(outcome)) if outcome.added == 1)
-            );
+            let first_ok = matches!(&first, Ok(Ok(outcome)) if outcome.added == 1);
+            if !first_ok {
+                println!("        诊断:JSON 首次导入结果 {first:?}");
+            }
+            check!("JSON 备份可导入到另一个密码本", first_ok);
 
             let second = export_import::import_from_path(&json_path)
                 .map(|entries| target.import_entries(entries, DuplicateStrategy::Skip));
-            check!(
-                "同一份备份重复导入会被跳过(幂等)",
-                matches!(second, Ok(Ok(outcome)) if outcome.skipped == 1 && !outcome.changed())
-            );
+            let second_ok = matches!(&second, Ok(Ok(outcome)) if outcome.skipped == 1 && !outcome.changed());
+            if !second_ok {
+                println!("        诊断:JSON 重复导入结果 {second:?}");
+            }
+            check!("同一份备份重复导入会被跳过(幂等)", second_ok);
 
             check!(
                 "导入前可生成 data.pkk.bak 备份",
