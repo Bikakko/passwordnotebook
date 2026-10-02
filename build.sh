@@ -8,7 +8,15 @@
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
-export PATH="$HOME/.cargo/bin:$PATH"
+
+# Rust 已是系统级安装(见 /etc/profile.d/rust.sh):cargo 在 /usr/local/bin,
+# 工具链在 /usr/local/rustup。登录 shell 会自动注入 RUSTUP_HOME,这里为
+# 未经过 profile 的环境(非登录 shell、脚本调用)兜底。
+export RUSTUP_HOME="${RUSTUP_HOME:-/usr/local/rustup}"
+
+# 可复现构建:PE 头会写入构建时间戳,同样的源码每次产出的字节都不同。
+# 零掉时间戳,让同源码 = 同产物(便于比对「部署的那份到底是哪次构建」)。
+export RUSTFLAGS="${RUSTFLAGS-} -C link-arg=-Wl,--no-insert-timestamp"
 
 cargo build --release --target x86_64-pc-windows-gnu
 
