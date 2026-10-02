@@ -6,7 +6,7 @@
 use std::ffi::c_void;
 use std::sync::{Mutex, OnceLock};
 
-use windows::core::{PCWSTR, PWSTR};
+use windows::core::{BOOL, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     CreateFontIndirectW, DeleteObject, GetSysColorBrush, InvalidateRect, RedrawWindow, ScreenToClient,
@@ -22,8 +22,9 @@ use windows::Win32::UI::Controls::{
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateWindowExW, DestroyMenu, DestroyWindow, GetCursorPos,
-    GetDlgItem, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, HMENU, IDC_ARROW,
+    AppendMenuW, CreatePopupMenu, CreateWindowExW, DestroyMenu, DestroyWindow, EnumChildWindows,
+    GetClassNameW, GetCursorPos, GetDlgItem, GetWindowLongPtrW, GetWindowTextLengthW,
+    GetWindowTextW, HMENU, IDC_ARROW,
     HICON, IsZoomed, KillTimer, LoadCursorW, LoadIconW, MESSAGEBOX_STYLE, MessageBoxW, MF_GRAYED,
     MF_POPUP,
     MF_SEPARATOR, MF_STRING,
@@ -1303,6 +1304,45 @@ pub fn apply_font_to(parent: HWND, ids: &[usize], font: HFONT) {
         if let Ok(control) = unsafe { GetDlgItem(Some(parent), *id as i32) } {
             send_msg(control, WM_SETFONT, font.0 as usize, 1);
         }
+    }
+}
+
+/// 给「动作类」控件套粗体:推送按钮与自绘分类页签。
+///
+/// 用枚举子窗口而不是逐对话框列 ID:按钮散落在七个对话框里,手工列表迟早会漏。
+pub fn apply_bold_actions(parent: HWND, bold: HFONT) {
+    if bold.is_invalid() {
+        return;
+    }
+    unsafe {
+        let _ = EnumChildWindows(Some(parent), Some(bold_action_proc), LPARAM(bold.0 as isize));
+    }
+}
+
+unsafe extern "system" fn bold_action_proc(child: HWND, lparam: LPARAM) -> BOOL {
+    let bold = HFONT(lparam.0 as *mut c_void);
+    let mut buf = [0u16; 32];
+    let len = unsafe { GetClassNameW(child, &mut buf) }.max(0) as usize;
+    let class = String::from_utf16_lossy(&buf[..len]);
+    // 只认推送按钮;复选框、单选、分组框保持正文字重。
+    let push_button = class == "Button" && {
+        let style = unsafe { GetWindowLongPtrW(child, WINDOW_LONG_PTR_INDEX(GWL_STYLE)) } as u32;
+        matches!(style & BS_TYPEMASK, BS_PUSHBUTTON | BS_DEFPUSHBUTTON)
+    };
+    if push_button || class == "PnbTabStrip" {
+        send_msg(child, WM_SETFONT, bold.0 as usize, 1);
+    }
+    BOOL(1)
+}
+
+/// 列头用粗体:表头是列表的「标题」,与正文拉开层级。
+pub fn listview_bold_header(list: HWND, bold: HFONT) {
+    if bold.is_invalid() {
+        return;
+    }
+    let header = HWND(send_msg(list, LVM_GETHEADER, 0, 0) as *mut c_void);
+    if !header.is_invalid() {
+        send_msg(header, WM_SETFONT, bold.0 as usize, 1);
     }
 }
 

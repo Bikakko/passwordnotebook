@@ -296,6 +296,10 @@ pub fn apply_fonts(hwnd: HWND) {
     for control in [s.unlock_title, s.create_title, s.bin_title] {
         ui::send_msg(control, WM_SETFONT, bold.0 as usize, 1);
     }
+    // 按钮与分类页签用粗体,列表列头也加粗:动作/标题类信息与正文拉开层级。
+    ui::apply_bold_actions(hwnd, bold);
+    ui::listview_bold_header(s.list, bold);
+    ui::listview_bold_header(s.bin_list, bold);
 
     if s.list.0 != std::ptr::null_mut() {
         ui::listview_set_row_height(s.list, scale(LIST_ROW_HEIGHT));

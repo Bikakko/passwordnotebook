@@ -102,6 +102,9 @@ pub fn open<T>(
         return unsafe { Box::from_raw(ptr) };
     }
 
+    // 动作类控件(推送按钮、分类页签)统一加粗;WM_CREATE 里套的是正文字体,这里盖过。
+    ui::apply_bold_actions(hwnd, super::app::state().font_bold);
+
     if !owner.is_invalid() {
         ui::enable(owner, false);
     }

@@ -1018,6 +1018,7 @@ pub fn preview_recovery() -> i32 {
     });
 
     app::state().font = ui::create_ui_font(false, dpi);
+    app::state().font_bold = ui::create_ui_font(true, dpi);
 
     let _ = ui::register_class("PnbPreviewHost", host_proc);
     let host = ui::create_window("PnbPreviewHost", "", WS_OVERLAPPED, 0, HWND::default(), 0, 0, 0, 200, 200);
@@ -1063,6 +1064,7 @@ pub fn preview_transfer() -> i32 {
     });
 
     app::state().font = ui::create_ui_font(false, dpi);
+    app::state().font_bold = ui::create_ui_font(true, dpi);
 
     let _ = ui::register_class("PnbPreviewHost", host_proc);
     let host = ui::create_window("PnbPreviewHost", "", WS_OVERLAPPED, 0, HWND::default(), 0, 0, 0, 200, 200);

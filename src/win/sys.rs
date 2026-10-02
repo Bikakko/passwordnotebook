@@ -47,6 +47,8 @@ pub const BS_PUSHBUTTON: u32 = 0x0000_0000;
 pub const BS_DEFPUSHBUTTON: u32 = 0x0000_0001;
 pub const BS_AUTOCHECKBOX: u32 = 0x0000_0003;
 pub const BS_GROUPBOX: u32 = 0x0000_0007;
+/// 按钮样式的低 4 位(BS_TYPEMASK):用来区分推送按钮与复选框/分组框。
+pub const BS_TYPEMASK: u32 = 0x0000_000F;
 
 // ---------- 下拉框 / 列表框 ----------
 pub const CBS_DROPDOWNLIST: u32 = 0x0003;
@@ -236,6 +238,7 @@ pub const IDYES: i32 = 6;
 pub const IDNO: i32 = 7;
 
 pub const GWLP_USERDATA: i32 = -21;
+pub const GWL_STYLE: i32 = -16;
 
 pub const DEFAULT_CHARSET: u32 = 1;
 pub const CLEARTYPE_QUALITY: u32 = 5;

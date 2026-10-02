@@ -247,6 +247,13 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
         font,
     );
 
+    // 区块标题改用粗体,与正文拉开层级。
+    ui::apply_font_to(
+        hwnd,
+        &[ID_SECTION_1, ID_SECTION_2, ID_SECTION_3, ID_SECTION_4, ID_SECTION_5],
+        app::state().font_bold,
+    );
+
     on_quick_changed(hwnd);
     show_cache_state(hwnd);
     // on_quick_changed 会重新 st(hwnd),不能复用上面那把引用。

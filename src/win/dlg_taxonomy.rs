@@ -172,6 +172,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
         ],
         font,
     );
+    ui::apply_font_to(hwnd, &[ID_CAT_LABEL, ID_TAG_LABEL], app::state().font_bold);
 
     refresh(hwnd);
     // refresh 会重新 st(hwnd),不能复用上面那把引用。

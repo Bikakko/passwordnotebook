@@ -235,6 +235,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     ui::set_checked(s.passwords, true);
 
     ui::apply_font_to(hwnd, &CONTROL_IDS, app::state().font);
+    ui::apply_font_to(hwnd, &[ID_EXPORT_GROUP, ID_IMPORT_GROUP], app::state().font_bold);
 }
 
 fn on_command(hwnd: HWND, id: usize, code: u16) {
