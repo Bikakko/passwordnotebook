@@ -9,7 +9,7 @@ use crate::model::{now_secs, Entry};
 use crate::strength;
 
 use super::app;
-use super::{dialog, dlg_generator, sys::*, ui};
+use super::{dialog, dlg_generator, sys::*, ui::{self, ctl, label}};
 
 const CLASS: &str = "PnbDlgEntryEditor";
 
@@ -87,7 +87,7 @@ pub fn show(
     });
 
     let title = if existing.is_some() { "编辑条目" } else { "新建条目" };
-    let state = dialog::open(CLASS, title, owner, wnd_proc, state, 580, 780);
+    let state = dialog::open(CLASS, title, owner, wnd_proc, state, 580, 784);
 
     if state.accepted {
         Some(state.result.clone())
@@ -116,30 +116,6 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
-}
-
-fn ctl(
-    class: &str,
-    text: &str,
-    style: u32,
-    ex: u32,
-    parent: HWND,
-    id: usize,
-    r: (i32, i32, i32, i32),
-) -> HWND {
-    let handle = ui::create_window(class, text, WS_CHILD | WS_VISIBLE | style, ex, parent, id, 0, 0, 10, 10);
-    ui::move_to(
-        handle,
-        ui::scale(r.0),
-        ui::scale(r.1),
-        ui::scale(r.2),
-        ui::scale(r.3),
-    );
-    handle
-}
-
-fn label(parent: HWND, text: &str, id: usize, r: (i32, i32, i32, i32)) -> HWND {
-    ctl("STATIC", text, SS_LEFT, 0, parent, id, r)
 }
 
 fn on_create(hwnd: HWND, lparam: LPARAM) {
@@ -188,8 +164,8 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     );
 
     s.error = label(hwnd, "", ID_ERROR, (20, 664, 540, 38));
-    ctl("BUTTON", "保存", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, hwnd, ID_SAVE, (20, 706, 130, 38));
-    ctl("BUTTON", "取消", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CANCEL, (162, 706, 100, 38));
+    ctl("BUTTON", "保存", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, hwnd, ID_SAVE, (322, 706, 130, 36));
+    ctl("BUTTON", "取消", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CANCEL, (460, 706, 100, 36));
 
     // 填入现有数据。
     let result = s.result.clone();

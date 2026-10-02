@@ -37,7 +37,7 @@ pub fn run_main_inner(auto_close_ms: Option<u32>) -> i32 {
 
     // 注意:x 传 CW_USEDEFAULT 时,系统会**忽略**宽高参数而使用默认小尺寸,
     // 所以这里自己算 DPI 缩放后的尺寸并居中 —— 否则窗口一开就又小又挤。
-    let (w, h, x, y) = initial_geometry(app::state().dpi);
+    let (w, h, x, y) = initial_geometry();
 
     let window_title = super::app_title();
     let hwnd = ui::create_window_with_param(
@@ -76,9 +76,9 @@ pub fn run_main_inner(auto_close_ms: Option<u32>) -> i32 {
             // SetWindowPlacement 会绕过最小尺寸限制,可能把窗口还原得比允许的还小,
             // 那样布局会被挤坏。太小就回到默认几何。
             let (_, _, restored_w, restored_h) = ui::window_rect(hwnd);
-            let (min_w, min_h) = minimum_size(app::state().dpi);
+            let (min_w, min_h) = minimum_size();
             if restored_w < min_w || restored_h < min_h {
-                let (w, h, x, y) = initial_geometry(app::state().dpi);
+                let (w, h, x, y) = initial_geometry();
                 unsafe {
                     let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowPos(
                         hwnd,
@@ -118,26 +118,21 @@ pub fn run_main_inner(auto_close_ms: Option<u32>) -> i32 {
 }
 
 /// 允许的最小窗口尺寸(与 WM_GETMINMAXINFO 保持一致)。
-fn minimum_size(dpi: u32) -> (i32, i32) {
-    let dpi = dpi.max(96);
-    let scale = |v: i32| (v as f32 * dpi as f32 / 96.0).round() as i32;
-    (scale(900), scale(600))
+fn minimum_size() -> (i32, i32) {
+    (ui::scale(900), ui::scale(600))
 }
 
 /// 按系统 DPI 缩放后在主屏居中。
-fn initial_geometry(dpi: u32) -> (i32, i32, i32, i32) {
+fn initial_geometry() -> (i32, i32, i32, i32) {
     use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
 
-    let dpi = dpi.max(96);
-    let scale = |v: i32| (v as f32 * dpi as f32 / 96.0).round() as i32;
-
-    let w = scale(1000);
-    let h = scale(700);
+    let w = ui::scale(1000);
+    let h = ui::scale(700);
     let screen_w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
     let screen_h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
 
     let x = ((screen_w - w) / 2).max(0);
-    let y = ((screen_h - h) / 3).max(0);
+    let y = ((screen_h - h) / 2).max(0);
     (w, h, x, y)
 }
 
@@ -198,8 +193,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         WM_GETMINMAXINFO => {
             // 限制最小尺寸,避免窗口被拖小到布局挤成一团。
             let info = unsafe { &mut *(lparam.0 as *mut MINMAXINFO) };
-            let dpi = if app::is_ready() { app::state().dpi } else { 96 };
-            let (min_w, min_h) = minimum_size(dpi);
+            let (min_w, min_h) = minimum_size();
             info.ptMinTrackSize = POINT {
                 x: min_w,
                 y: min_h,

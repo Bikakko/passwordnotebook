@@ -11,7 +11,7 @@ use super::app;
 use super::clipboard;
 use super::dialog;
 use super::sys::*;
-use super::ui;
+use super::ui::{self, ctl};
 
 const CLASS: &str = "PnbDlgGenerator";
 
@@ -59,7 +59,7 @@ pub fn show(owner: HWND, use_button: bool) -> Option<Zeroizing<String>> {
         error: HWND::default(),
     });
 
-    let state = dialog::open(CLASS, "生成密码", owner, wnd_proc, state, 500, 400);
+    let state = dialog::open(CLASS, "生成密码", owner, wnd_proc, state, 500, 390);
     // 空密码不算成功:生成失败时输出框是空的,别把它当成可用密码交出去。
     if state.accepted && !state.password.is_empty() {
         Some(state.password.clone())
@@ -90,26 +90,6 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
     }
 }
 
-fn ctl(
-    class: &str,
-    text: &str,
-    style: u32,
-    ex: u32,
-    parent: HWND,
-    id: usize,
-    r: (i32, i32, i32, i32),
-) -> HWND {
-    let handle = ui::create_window(class, text, WS_CHILD | WS_VISIBLE | style, ex, parent, id, 0, 0, 10, 10);
-    ui::move_to(
-        handle,
-        ui::scale(r.0),
-        ui::scale(r.1),
-        ui::scale(r.2),
-        ui::scale(r.3),
-    );
-    handle
-}
-
 fn on_create(hwnd: HWND, lparam: LPARAM) {
     let ptr = unsafe { ui::create_param(lparam) } as *mut GenState;
     ui::set_user_data(hwnd, ptr as *mut std::ffi::c_void);
@@ -122,9 +102,9 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
         WS_EX_CLIENTEDGE,
         hwnd,
         ID_OUTPUT,
-        (16, 16, 452, 34),
+        (20, 20, 460, 30),
     );
-    ctl("STATIC", "长度", SS_LEFT, 0, hwnd, ID_LENGTH_LABEL, (16, 64, 50, 22));
+    ctl("STATIC", "长度", SS_LEFT, 0, hwnd, ID_LENGTH_LABEL, (20, 66, 40, 22));
     s.length = ctl(
         "EDIT",
         "20",
@@ -132,7 +112,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
         WS_EX_CLIENTEDGE,
         hwnd,
         ID_LENGTH,
-        (70, 62, 70, 26),
+        (64, 62, 70, 30),
     );
     ctl(
         "STATIC",
@@ -141,13 +121,13 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
         0,
         hwnd,
         ID_HINT,
-        (152, 64, 100, 22),
+        (142, 66, 120, 22),
     );
 
-    s.upper = ctl("BUTTON", "大写字母（A-Z）", WS_TABSTOP | BS_AUTOCHECKBOX, 0, hwnd, ID_UPPER, (16, 100, 200, 24));
-    s.lower = ctl("BUTTON", "小写字母（a-z）", WS_TABSTOP | BS_AUTOCHECKBOX, 0, hwnd, ID_LOWER, (16, 128, 200, 24));
-    s.digits = ctl("BUTTON", "数字（0-9）", WS_TABSTOP | BS_AUTOCHECKBOX, 0, hwnd, ID_DIGITS, (16, 156, 200, 24));
-    s.symbols = ctl("BUTTON", "符号（!@#$…）", WS_TABSTOP | BS_AUTOCHECKBOX, 0, hwnd, ID_SYMBOLS, (16, 184, 200, 24));
+    s.upper = ctl("BUTTON", "大写字母（A-Z）", WS_TABSTOP | BS_AUTOCHECKBOX, 0, hwnd, ID_UPPER, (20, 106, 200, 24));
+    s.lower = ctl("BUTTON", "小写字母（a-z）", WS_TABSTOP | BS_AUTOCHECKBOX, 0, hwnd, ID_LOWER, (20, 134, 200, 24));
+    s.digits = ctl("BUTTON", "数字（0-9）", WS_TABSTOP | BS_AUTOCHECKBOX, 0, hwnd, ID_DIGITS, (20, 162, 200, 24));
+    s.symbols = ctl("BUTTON", "符号（!@#$…）", WS_TABSTOP | BS_AUTOCHECKBOX, 0, hwnd, ID_SYMBOLS, (20, 190, 200, 24));
     s.no_ambiguous = ctl(
         "BUTTON",
         "排除易混淆字符（l/1/O/0 等）",
@@ -155,7 +135,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
         0,
         hwnd,
         ID_NOAMB,
-        (16, 212, 300, 24),
+        (20, 218, 300, 24),
     );
 
     for (id, checked) in [
@@ -175,14 +155,14 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     } else {
         BS_PUSHBUTTON
     };
-    ctl("BUTTON", "重新生成", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_REGEN, (16, 316, 120, 34));
-    ctl("BUTTON", "复制", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_COPY, (148, 316, 90, 34));
-    let use_btn = ctl("BUTTON", "使用此密码", WS_TABSTOP | use_style, 0, hwnd, ID_USE, (250, 316, 130, 34));
+    ctl("BUTTON", "重新生成", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_REGEN, (40, 308, 120, 36));
+    ctl("BUTTON", "复制", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_COPY, (168, 308, 90, 36));
+    let use_btn = ctl("BUTTON", "使用此密码", WS_TABSTOP | use_style, 0, hwnd, ID_USE, (266, 308, 130, 36));
     if !s.use_button {
         ui::set_visible(use_btn, false);
     }
-    ctl("BUTTON", "关闭", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CLOSE, (392, 316, 76, 34));
-    s.error = ctl("STATIC", "", SS_LEFT, 0, hwnd, ID_ERROR, (16, 286, 452, 24));
+    ctl("BUTTON", "关闭", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CLOSE, (404, 308, 76, 36));
+    s.error = ctl("STATIC", "", SS_LEFT, 0, hwnd, ID_ERROR, (20, 252, 460, 44));
 
     let font = app::state().font;
     ui::apply_font_to(

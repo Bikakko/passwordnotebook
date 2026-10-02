@@ -1,0 +1,48 @@
+//! 界面设计令牌:间距、尺寸、颜色的唯一来源。
+//!
+//! 全部为 **96-DPI 逻辑像素**,使用时经 [`super::ui::scale`] 换算。
+//! 新增控件时优先从这里取值,不要再写裸数字。
+
+// ---------- 间距 ----------
+pub const SPACE_XS: i32 = 4;
+pub const SPACE_SM: i32 = 8;
+pub const SPACE_MD: i32 = 12;
+pub const SPACE_LG: i32 = 16;
+pub const SPACE_XL: i32 = 20;
+
+/// 窗口/对话框内容的外边距。
+pub const MARGIN: i32 = 20;
+
+// ---------- 尺寸 ----------
+pub const LABEL_H: i32 = 22;
+pub const FIELD_H: i32 = 30;
+pub const CHECK_H: i32 = 24;
+pub const BUTTON_H: i32 = 36;
+/// 下拉框的展开高度(控件自身高度由系统按字体决定,这里只给足余量)。
+pub const COMBO_DROP_H: i32 = 200;
+/// 主列表行高。
+pub const LIST_ROW_H: i32 = 30;
+/// 两行状态栏的高度(计数一行、路径与警告一行)。
+/// 按行高约 21px 留两行,再留一点余量,免得第二行被裁掉。
+pub const STATUS_H: i32 = 44;
+
+// ---------- 区块 ----------
+pub const SECTION_TITLE_H: i32 = 24;
+
+// ---------- 颜色(COLORREF,0x00BBGGRR)----------
+/// 正文色 #1F2430。
+pub const TEXT: u32 = 0x0030_241F;
+/// 错误/警告色 #C0392B。
+pub const ERROR_TEXT: u32 = 0x002B_39C0;
+/// 次要说明色(空状态提示等)#999EA1。
+pub const MUTED_TEXT: u32 = 0x00A1_9E99;
+/// 列表网格线(RGB 197, 202, 211)。
+pub const GRIDLINE: u32 = 0x00D3_CAC5;
+
+// 自绘分类页签。
+pub const STRIP_BG: u32 = 0x00F5_F5F5; // #F5F5F5 未选中的底色
+pub const STRIP_CARD_BG: u32 = 0x00FF_FFFF; // 选中:白色卡片
+pub const STRIP_TEXT: u32 = 0x0046_4646; // #464646
+pub const STRIP_TEXT_ON: u32 = 0x0016_1616;
+pub const STRIP_SEPARATOR: u32 = 0x00DC_DCDC; // #DCDCDC
+pub const STRIP_ACCENT: u32 = 0x00EB_6F2F; // #2F6FEB 选中下划线

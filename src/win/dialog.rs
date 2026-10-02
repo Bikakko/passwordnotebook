@@ -73,14 +73,8 @@ pub fn open<T>(
 ) -> Box<T> {
     let _ = ui::register_class(class, proc);
 
-    let dpi = if owner.is_invalid() {
-        96
-    } else {
-        ui::window_dpi(owner)
-    };
-    let scale = |v: i32| (v as f32 * dpi as f32 / 96.0).round() as i32;
-    let w = scale(width);
-    let h = scale(height);
+    let w = ui::scale(width);
+    let h = ui::scale(height);
     let (x, y) = centered_position(owner, w, h);
 
     let ptr = Box::into_raw(state);

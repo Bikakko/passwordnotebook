@@ -4,7 +4,8 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::DefWindowProcW;
 
 use super::app;
-use super::{dialog, dlg_recovery, dpapi, hello, sys::*, ui};
+use super::tokens::*;
+use super::{dialog, dlg_recovery, dpapi, hello, sys::*, ui::{self, ctl, label}};
 
 const CLASS: &str = "PnbDlgSettings";
 
@@ -83,12 +84,23 @@ pub fn show(owner: HWND) {
         wnd_proc,
         state,
         560,
-        760,
+        776,
     );
 }
 
 fn st(hwnd: HWND) -> &'static mut SettingsState {
     unsafe { ui::state_ref::<SettingsState>(hwnd) }
+}
+
+/// 路径标签放不下时的缩略:只保留末尾,前面用省略号。
+fn short_path(path: &str) -> String {
+    const MAX_CHARS: usize = 46;
+    let count = path.chars().count();
+    if count <= MAX_CHARS {
+        return path.to_string();
+    }
+    let tail: String = path.chars().skip(count - (MAX_CHARS - 1)).collect();
+    format!("…{tail}")
 }
 
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -109,43 +121,19 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
     }
 }
 
-fn ctl(
-    class: &str,
-    text: &str,
-    style: u32,
-    ex: u32,
-    parent: HWND,
-    id: usize,
-    r: (i32, i32, i32, i32),
-) -> HWND {
-    let handle = ui::create_window(class, text, WS_CHILD | WS_VISIBLE | style, ex, parent, id, 0, 0, 10, 10);
-    ui::move_to(
-        handle,
-        ui::scale(r.0),
-        ui::scale(r.1),
-        ui::scale(r.2),
-        ui::scale(r.3),
-    );
-    handle
-}
-
-fn label(parent: HWND, text: &str, id: usize, r: (i32, i32, i32, i32)) -> HWND {
-    ctl("STATIC", text, SS_LEFT, 0, parent, id, r)
-}
-
 fn on_create(hwnd: HWND, lparam: LPARAM) {
     let ptr = unsafe { ui::create_param(lparam) } as *mut SettingsState;
     ui::set_user_data(hwnd, ptr as *mut std::ffi::c_void);
     let s = st(hwnd);
     let settings = app::state().settings.clone();
 
-    label(hwnd, "解锁与安全", ID_SECTION_1, (20, 10, 200, 24));
-    s.quick = ctl("BUTTON", "允许本机免密解锁", WS_TABSTOP | BS_AUTOCHECKBOX, 0, hwnd, ID_QUICK, (20, 36, 300, 24));
+    label(hwnd, "解锁与安全", ID_SECTION_1, (MARGIN, 20, 200, SECTION_TITLE_H));
+    s.quick = ctl("BUTTON", "允许本机免密解锁", WS_TABSTOP | BS_AUTOCHECKBOX, 0, hwnd, ID_QUICK, (MARGIN, 36, 300, CHECK_H));
     label(
         hwnd,
         "用系统凭据加密密钥并缓存：未锁屏时打开程序无需输入登录密码，锁屏或屏保后失效。",
         ID_QUICK_HINT,
-        (40, 62, 500, 44),
+        (40, 62, 480, 44),
     );
     s.hello = ctl(
         "BUTTON",
@@ -154,7 +142,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
         0,
         hwnd,
         ID_HELLO,
-        (40, 108, 500, 24),
+        (40, 108, 480, CHECK_H),
     );
     // 启动时已在后台测过;到这儿一般已有结果,没有就暂按「不可用」显示。
     let available = hello::availability().unwrap_or(false);
@@ -163,15 +151,15 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
         if available {
             "此设备支持 Windows Hello。"
         } else {
-            "此设备不支持 Windows Hello（未设置指纹/PIN 或硬件不支持），改用登录密码。"
+            "此设备不支持 Windows Hello，改用登录密码。"
         },
         ID_HELLO_HINT,
-        (40, 132, 500, 24),
+        (40, 132, 480, LABEL_H),
     );
 
-    label(hwnd, "自动锁定", ID_SECTION_2, (20, 166, 200, 24));
-    label(hwnd, "空闲多久后自动锁定密码本", ID_IDLE_LABEL, (20, 192, 300, 22));
-    s.idle = ctl("COMBOBOX", "", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, 0, hwnd, ID_IDLE, (20, 214, 500, 200));
+    label(hwnd, "自动锁定", ID_SECTION_2, (MARGIN, 162, 200, SECTION_TITLE_H));
+    label(hwnd, "空闲多久后自动锁定密码本", ID_IDLE_LABEL, (MARGIN, 188, 300, LABEL_H));
+    s.idle = ctl("COMBOBOX", "", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, 0, hwnd, ID_IDLE, (MARGIN, 210, 520, COMBO_DROP_H));
     for text in IDLE_LABELS {
         ui::combo_add(s.idle, text);
     }
@@ -180,9 +168,9 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
         IDLE_VALUES.iter().position(|v| *v == settings.idle_lock_minutes).unwrap_or(0) as i32,
     );
 
-    label(hwnd, "剪贴板", ID_SECTION_3, (20, 248, 200, 24));
-    label(hwnd, "复制密码后自动清空剪贴板", ID_CLIP_LABEL, (20, 274, 300, 22));
-    s.clipboard = ctl("COMBOBOX", "", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, 0, hwnd, ID_CLIP, (20, 296, 500, 200));
+    label(hwnd, "剪贴板", ID_SECTION_3, (MARGIN, 240, 200, SECTION_TITLE_H));
+    label(hwnd, "复制密码后自动清空剪贴板", ID_CLIP_LABEL, (MARGIN, 266, 300, LABEL_H));
+    s.clipboard = ctl("COMBOBOX", "", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, 0, hwnd, ID_CLIP, (MARGIN, 288, 520, COMBO_DROP_H));
     for text in CLIP_LABELS {
         ui::combo_add(s.clipboard, text);
     }
@@ -194,9 +182,9 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
             .unwrap_or(2) as i32,
     );
 
-    label(hwnd, "回收站", ID_SECTION_4, (20, 330, 200, 24));
-    label(hwnd, "回收站条目保留时长（超期后下次解锁时彻底删除）", ID_BIN_LABEL, (20, 356, 500, 22));
-    s.bin = ctl("COMBOBOX", "", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, 0, hwnd, ID_BIN, (20, 378, 500, 200));
+    label(hwnd, "回收站", ID_SECTION_4, (MARGIN, 318, 200, SECTION_TITLE_H));
+    label(hwnd, "回收站条目保留时长（超期后下次解锁时彻底删除）", ID_BIN_LABEL, (MARGIN, 344, 520, LABEL_H));
+    s.bin = ctl("COMBOBOX", "", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, 0, hwnd, ID_BIN, (MARGIN, 366, 520, COMBO_DROP_H));
     for text in BIN_LABELS {
         ui::combo_add(s.bin, text);
     }
@@ -208,27 +196,27 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
             .unwrap_or(2) as i32,
     );
 
-    label(hwnd, "登录密码与恢复码", ID_SECTION_5, (20, 412, 200, 24));
-    label(hwnd, "当前登录密码", ID_CUR_PW_LABEL, (20, 438, 200, 22));
-    s.current_pw = ctl("EDIT", "", WS_BORDER | WS_TABSTOP | ES_PASSWORD | ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, hwnd, ID_CUR_PW, (20, 460, 500, 28));
-    label(hwnd, "新的登录密码", ID_NEW_PW_LABEL, (20, 494, 200, 22));
-    s.new_pw = ctl("EDIT", "", WS_BORDER | WS_TABSTOP | ES_PASSWORD | ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, hwnd, ID_NEW_PW, (20, 516, 500, 28));
-    label(hwnd, "确认新的登录密码", ID_CONFIRM_PW_LABEL, (20, 550, 200, 22));
-    s.confirm_pw = ctl("EDIT", "", WS_BORDER | WS_TABSTOP | ES_PASSWORD | ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, hwnd, ID_CONFIRM_PW, (20, 572, 500, 28));
+    label(hwnd, "登录密码与恢复码", ID_SECTION_5, (MARGIN, 396, 200, SECTION_TITLE_H));
+    label(hwnd, "当前登录密码", ID_CUR_PW_LABEL, (MARGIN, 422, 200, LABEL_H));
+    s.current_pw = ctl("EDIT", "", WS_BORDER | WS_TABSTOP | ES_PASSWORD | ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, hwnd, ID_CUR_PW, (MARGIN, 444, 520, FIELD_H));
+    label(hwnd, "新的登录密码", ID_NEW_PW_LABEL, (MARGIN, 478, 200, LABEL_H));
+    s.new_pw = ctl("EDIT", "", WS_BORDER | WS_TABSTOP | ES_PASSWORD | ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, hwnd, ID_NEW_PW, (MARGIN, 500, 520, FIELD_H));
+    label(hwnd, "确认新的登录密码", ID_CONFIRM_PW_LABEL, (MARGIN, 534, 200, LABEL_H));
+    s.confirm_pw = ctl("EDIT", "", WS_BORDER | WS_TABSTOP | ES_PASSWORD | ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, hwnd, ID_CONFIRM_PW, (MARGIN, 556, 520, FIELD_H));
 
-    ctl("BUTTON", "修改登录密码", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CHANGE_PW, (20, 608, 140, 34));
-    ctl("BUTTON", "重新生成恢复码", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_REGEN, (172, 608, 160, 34));
+    ctl("BUTTON", "修改登录密码", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CHANGE_PW, (MARGIN, 592, 140, BUTTON_H));
+    ctl("BUTTON", "重新生成恢复码", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_REGEN, (168, 592, 160, BUTTON_H));
 
     label(
         hwnd,
-        &format!("密码本文件：{}", crate::paths::vault_display_path()),
+        &format!("密码本文件：{}", short_path(&crate::paths::vault_display_path())),
         ID_PATH,
-        (20, 648, 500, 22),
+        (MARGIN, 632, 520, LABEL_H),
     );
 
-    s.error = label(hwnd, "", ID_ERROR, (20, 672, 500, 22));
-    ctl("BUTTON", "保存", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, hwnd, ID_SAVE, (300, 700, 110, 36));
-    ctl("BUTTON", "取消", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CANCEL, (420, 700, 100, 36));
+    s.error = label(hwnd, "", ID_ERROR, (MARGIN, 658, 520, 36));
+    ctl("BUTTON", "保存", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, hwnd, ID_SAVE, (322, 700, 110, BUTTON_H));
+    ctl("BUTTON", "取消", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CANCEL, (440, 700, 100, BUTTON_H));
 
     ui::set_checked(s.quick, settings.quick_unlock_enabled);
     ui::set_checked(s.hello, settings.require_windows_hello);

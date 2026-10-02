@@ -14,7 +14,7 @@ use windows::Win32::UI::WindowsAndMessaging::DefWindowProcW;
 use crate::export_import::{self, DuplicateStrategy, ExportOptions, Format};
 
 use super::app;
-use super::{dialog, sys::*, timefmt, ui};
+use super::{dialog, sys::*, timefmt, ui::{self, ctl}};
 
 const CLASS: &str = "PnbDlgTransfer";
 
@@ -107,26 +107,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
     }
 }
 
-fn ctl(
-    class: &str,
-    text: &str,
-    style: u32,
-    ex: u32,
-    parent: HWND,
-    id: usize,
-    r: (i32, i32, i32, i32),
-) -> HWND {
-    let handle = ui::create_window(class, text, WS_CHILD | WS_VISIBLE | style, ex, parent, id, 0, 0, 10, 10);
-    ui::move_to(
-        handle,
-        ui::scale(r.0),
-        ui::scale(r.1),
-        ui::scale(r.2),
-        ui::scale(r.3),
-    );
-    handle
-}
-
+/// 下拉列表(固定组合)的小包装。
 fn combo(parent: HWND, id: usize, r: (i32, i32, i32, i32)) -> HWND {
     ctl(
         "COMBOBOX",
@@ -185,7 +166,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
         ID_EXPORT_NOTE,
         (36, 190, 270, 60),
     );
-    ctl("BUTTON", "导出到文件…", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_EXPORT_BTN, (36, 258, 160, 38));
+    ctl("BUTTON", "导出到文件…", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_EXPORT_BTN, (36, 258, 160, 36));
     ctl(
         "STATIC",
         "回收站里的条目不会被导出。",
@@ -209,7 +190,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
         ID_IMPORT_HINT,
         (356, 152, 268, 60),
     );
-    ctl("BUTTON", "从文件导入…", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_IMPORT_BTN, (356, 258, 160, 38));
+    ctl("BUTTON", "从文件导入…", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_IMPORT_BTN, (356, 258, 160, 36));
     ctl(
         "STATIC",
         "导入前自动备份原文件为 data.pkk.bak。",
@@ -221,7 +202,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     );
 
     s.status = ctl("STATIC", "", SS_LEFT, 0, hwnd, ID_STATUS, (20, 388, 620, 44));
-    ctl("BUTTON", "关闭", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, hwnd, ID_CLOSE, (520, 442, 120, 38));
+    ctl("BUTTON", "关闭", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, hwnd, ID_CLOSE, (540, 440, 120, 36));
 
     ui::combo_add(s.format, Format::Csv.label());
     ui::combo_add(s.format, Format::Json.label());

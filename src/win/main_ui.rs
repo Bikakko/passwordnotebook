@@ -18,19 +18,13 @@ use crate::vaultfile::VaultFile;
 use super::app::{self, Mode};
 use super::sys::*;
 use super::timefmt;
+use super::tokens::*;
 use super::ui;
+use super::ui::{scale, unscale};
 use super::{
     clipboard, dialog, dlg_editor, dlg_generator, dlg_input, dlg_recovery, dlg_settings, dlg_taxonomy,
     dlg_transfer, dpapi, hello, idle,
 };
-
-/// 列表行高度(基准 96 DPI 下的高度;系统原本约为 24px,增加 20%~25% 至 30px,
-/// 同步增大上下内边距使行间距更舒适)。
-pub const LIST_ROW_HEIGHT: i32 = 30;
-
-/// 加强网格线的颜色(比系统默认淡淡的灰色更显眼、更清晰)。
-/// COLORREF 为 0x00BBGGRR:RGB(197, 202, 211) -> 0x00D3CAC5
-pub const GRIDLINE_COLOR: u32 = 0x00D3_CAC5;
 
 /// 列表列定义:(列标题, 96 DPI 基准逻辑像素宽度, 默认百分比分配)
 pub type ListColDef = (&'static str, i32, i32);
@@ -302,10 +296,10 @@ pub fn apply_fonts(hwnd: HWND) {
     ui::listview_bold_header(s.bin_list, bold);
 
     if s.list.0 != std::ptr::null_mut() {
-        ui::listview_set_row_height(s.list, scale(LIST_ROW_HEIGHT));
+        ui::listview_set_row_height(s.list, scale(LIST_ROW_H));
     }
     if s.bin_list.0 != std::ptr::null_mut() {
-        ui::listview_set_row_height(s.bin_list, scale(LIST_ROW_HEIGHT));
+        ui::listview_set_row_height(s.bin_list, scale(LIST_ROW_H));
     }
 }
 
@@ -320,7 +314,14 @@ pub fn on_ctlcolor_static(hwnd: HWND, hdc_raw: usize, control_raw: isize) -> isi
 
     let s = st(hwnd);
     let is_error = control == s.unlock_error || control == s.create_error;
-    let color = if is_error { 0x002B39C0 } else { 0x0030241F };
+    let is_muted = control == s.empty_hint || control == s.bin_empty_hint;
+    let color = if is_error {
+        ERROR_TEXT
+    } else if is_muted {
+        MUTED_TEXT
+    } else {
+        TEXT
+    };
 
     ui::paint_static_label(hdc, color)
 }
@@ -361,7 +362,8 @@ fn listbox(parent: HWND, id: usize) -> HWND {
     ui::create_window(
         "LISTBOX",
         "",
-        WS_CHILD | WS_BORDER | WS_VSCROLL | WS_TABSTOP | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
+        WS_CHILD | WS_BORDER | WS_VSCROLL | WS_HSCROLL | WS_TABSTOP | LBS_NOTIFY
+            | LBS_NOINTEGRALHEIGHT,
         0,
         parent,
         id,
@@ -588,18 +590,6 @@ pub fn apply_mode(hwnd: HWND) {
     }
 }
 
-/// 按当前 DPI 缩放逻辑像素(96 DPI 逻辑像素 -> 当前物理像素)。
-fn scale(v: i32) -> i32 {
-    let dpi = app::state().dpi as f32;
-    (v as f32 * dpi / 96.0).round() as i32
-}
-
-/// 逆向 DPI 缩放(当前物理像素 -> 96 DPI 基准逻辑像素)。
-fn unscale(v: i32) -> i32 {
-    let dpi = app::state().dpi.max(96) as f32;
-    ((v as f32 * 96.0) / dpi).round() as i32
-}
-
 fn place(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) {
     unsafe {
         let _ = windows::Win32::UI::WindowsAndMessaging::MoveWindow(
@@ -689,7 +679,7 @@ fn layout_inner(hwnd: HWND) {
     place(s.search, margin, search_y, cw - margin * 2, scale(28));
 
     let top = search_y + scale(28) + scale(8);
-    let status_h = scale(22);
+    let status_h = scale(STATUS_H);
     let body_h = (ch - top - status_h - margin).max(scale(80));
 
     // 左侧:标签
@@ -880,6 +870,14 @@ fn refresh_filters(hwnd: HWND) {
     }
     let tag_index = ui::listbox_find(s.tag_list, &previous_tag);
     ui::send_msg(s.tag_list, LB_SETCURSEL, tag_index.max(0) as usize, 0);
+
+    // 标签名可能很长:量出最宽的一项,让列表框能横向滚动。
+    let max_w = std::iter::once(ALL_TAGS)
+        .chain(tags.iter().map(|t| t.as_str()))
+        .map(|t| ui::text_width(hwnd, app::state().font, t))
+        .max()
+        .unwrap_or(0);
+    ui::listbox_set_horizontal_extent(s.tag_list, max_w + scale(12));
 }
 
 fn refresh_list(hwnd: HWND) {
@@ -1027,21 +1025,27 @@ fn update_status(hwnd: HWND) {
     } else {
         String::new()
     };
-    let path = vault
-        .path()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default();
     // 有改动没能落盘:必须一直挂在状态栏上,不能只在出错那一下弹个框。
     // 这些改动**不丢数据**(下次任何一次成功保存都会一并写出),但会随锁定消失,
     // 也不能说成「已保存」——两边都不能骗用户。
     ui::set_text(
         s.status,
         &format!(
-            "共 {total} 条，显示 {}{bin_part}{fav_part}{} · {path}",
+            "共 {total} 条，显示 {}{bin_part}{fav_part}\r\n{}{}",
             s.rows.len(),
+            vault_path_text(),
             unsaved_note(),
         ),
     );
+}
+
+/// 状态栏第二行显示的密码本路径(未解锁时为空串)。
+fn vault_path_text() -> String {
+    app::state()
+        .vault
+        .path()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// 「有改动未落盘」的提示片段;没有就返回空串。
@@ -1057,9 +1061,12 @@ fn unsaved_note() -> &'static str {
     }
 }
 
-/// 覆盖状态栏显示一条临时反馈,并保留「未落盘」警告。
+/// 覆盖状态栏显示一条临时反馈,并保留「未落盘」警告与路径行。
 fn flash_status(hwnd: HWND, message: &str) {
-    ui::set_text(st(hwnd).status, &format!("{message}{}", unsaved_note()));
+    ui::set_text(
+        st(hwnd).status,
+        &format!("{message}{}\r\n{}", unsaved_note(), vault_path_text()),
+    );
 }
 
 /// 有未落盘改动时,先试着补一次保存;成功就当无事发生。
@@ -1265,7 +1272,7 @@ pub fn on_notify(hwnd: HWND, lparam: LPARAM) -> isize {
         if stage == CDDS_ITEMPOSTPAINT {
             let hdc = lvcd.nmcd.hdc;
             let rc = lvcd.nmcd.rc;
-            let brush = unsafe { CreateSolidBrush(COLORREF(GRIDLINE_COLOR)) };
+            let brush = unsafe { CreateSolidBrush(COLORREF(GRIDLINE)) };
 
             // 1. 下方水平网格线
             let bottom_line = RECT {

@@ -43,6 +43,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use zeroize::Zeroizing;
 
 use super::sys::*;
+use super::tokens::*;
 
 pub type WndProc = unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT;
 
@@ -521,6 +522,11 @@ pub fn listbox_selected_indices(hwnd: HWND) -> Vec<i32> {
 pub fn listbox_find(hwnd: HWND, text: &str) -> i32 {
     let w = Wz::new(text);
     send_msg(hwnd, LB_FINDSTRINGEXACT, usize::MAX, w.0.as_ptr() as isize) as i32
+}
+
+/// 设置列表框的横向滚动范围(文字比控件宽时出现横向滚动条)。
+pub fn listbox_set_horizontal_extent(hwnd: HWND, width: i32) {
+    send_msg(hwnd, LB_SETHORIZONTALEXTENT, width.max(0) as usize, 0);
 }
 
 pub fn listview_clear(hwnd: HWND) {
@@ -1017,13 +1023,7 @@ fn tab_strip() -> &'static Mutex<TabStrip> {
     })
 }
 
-// COLORREF 是 BGR 序。
-const STRIP_BG: u32 = 0x00F5_F5F5; // #F5F5F5 未选中的底色
-const STRIP_CARD_BG: u32 = 0x00FF_FFFF; // 选中:白色卡片
-const STRIP_TEXT: u32 = 0x0046_4646; // #464646
-const STRIP_TEXT_ON: u32 = 0x0016_1616;
-const STRIP_SEPARATOR: u32 = 0x00DC_DCDC; // #DCDCDC
-const STRIP_ACCENT: u32 = 0x00EB_6F2F; // #2F6FEB 选中下划线
+// COLORREF 是 BGR 序;颜色统一收在 `super::tokens`。
 
 /// 标签条上的尺寸(已按 DPI 缩放):(左右内边距, 最小宽度, 下划线高度)
 fn strip_metrics(hwnd: HWND) -> (i32, i32, i32) {
@@ -1295,6 +1295,28 @@ pub fn move_to(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) {
     }
 }
 
+/// 创建带布局的子控件:矩形按 96-DPI 逻辑像素传入,内部统一缩放。
+///
+/// 各对话框原先各自复制了一份同样的实现,统一收到这里。
+pub fn ctl(
+    class: &str,
+    text: &str,
+    style: u32,
+    ex: u32,
+    parent: HWND,
+    id: usize,
+    r: (i32, i32, i32, i32),
+) -> HWND {
+    let handle = create_window(class, text, WS_CHILD | WS_VISIBLE | style, ex, parent, id, 0, 0, 10, 10);
+    move_to(handle, scale(r.0), scale(r.1), scale(r.2), scale(r.3));
+    handle
+}
+
+/// 静态文本(左对齐)。
+pub fn label(parent: HWND, text: &str, id: usize, r: (i32, i32, i32, i32)) -> HWND {
+    ctl("STATIC", text, SS_LEFT, 0, parent, id, r)
+}
+
 /// 给一组控件套用字体。
 pub fn apply_font_to(parent: HWND, ids: &[usize], font: HFONT) {
     if font.is_invalid() {
@@ -1346,8 +1368,3 @@ pub fn listview_bold_header(list: HWND, bold: HFONT) {
     }
 }
 
-/// 取窗口当前 DPI(缺省 96)。
-pub fn window_dpi(hwnd: HWND) -> u32 {
-    let dpi = unsafe { GetDpiForWindow(hwnd) };
-    if dpi == 0 { 96 } else { dpi }
-}

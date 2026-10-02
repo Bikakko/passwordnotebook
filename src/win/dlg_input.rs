@@ -4,7 +4,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::DefWindowProcW;
 
 use super::app;
-use super::{dialog, sys::*, ui};
+use super::{dialog, sys::*, ui::{self, ctl}};
 
 const CLASS: &str = "PnbDlgInput";
 
@@ -59,26 +59,6 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
     }
 }
 
-fn ctl(
-    class: &str,
-    text: &str,
-    style: u32,
-    ex: u32,
-    parent: HWND,
-    id: usize,
-    r: (i32, i32, i32, i32),
-) -> HWND {
-    let handle = ui::create_window(class, text, WS_CHILD | WS_VISIBLE | style, ex, parent, id, 0, 0, 10, 10);
-    ui::move_to(
-        handle,
-        ui::scale(r.0),
-        ui::scale(r.1),
-        ui::scale(r.2),
-        ui::scale(r.3),
-    );
-    handle
-}
-
 fn on_create(hwnd: HWND, lparam: LPARAM) {
     let ptr = unsafe { ui::create_param(lparam) } as *mut InputState;
     ui::set_user_data(hwnd, ptr as *mut std::ffi::c_void);
@@ -97,9 +77,9 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
         WS_EX_CLIENTEDGE,
         hwnd,
         ID_EDIT,
-        (20, 46, 420, 32),
+        (20, 46, 420, 30),
     );
-    ctl("BUTTON", "确定", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, hwnd, ID_OK, (220, 96, 100, 36));
+    ctl("BUTTON", "确定", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, hwnd, ID_OK, (222, 96, 100, 36));
     ctl("BUTTON", "取消", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CANCEL, (330, 96, 110, 36));
 
     let font = app::state().font;

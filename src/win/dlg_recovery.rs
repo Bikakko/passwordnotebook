@@ -9,7 +9,7 @@ use crate::recovery;
 use crate::vault::VaultService;
 
 use super::app;
-use super::{clipboard, dialog, sys::*, ui};
+use super::{clipboard, dialog, sys::*, ui::{self, ctl}};
 
 // ============ 展示恢复码 ============
 
@@ -41,7 +41,7 @@ pub fn show_code(owner: HWND, code: &str, initial: bool) {
         code_proc,
         state,
         560,
-        300,
+        312,
     );
 }
 
@@ -91,7 +91,7 @@ unsafe extern "system" fn code_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                 0,
                 hwnd,
                 C_OK,
-                (20, 234, 210, 38),
+                (330, 234, 210, 36),
             );
             ui::enable(s.ok, false);
 
@@ -223,7 +223,7 @@ unsafe extern "system" fn recover_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
                 0,
                 hwnd,
                 R_HINT,
-                (20, 14, 484, 48),
+                (20, 14, 500, 48),
             );
             ctl("STATIC", "恢复码", SS_LEFT, 0, hwnd, R_CODE_LABEL, (20, 68, 100, 22));
             s.code = ctl(
@@ -233,7 +233,7 @@ unsafe extern "system" fn recover_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
                 WS_EX_CLIENTEDGE,
                 hwnd,
                 R_CODE,
-                (20, 92, 484, 30),
+                (20, 92, 500, 30),
             );
             ctl("STATIC", "新的登录密码", SS_LEFT, 0, hwnd, R_PW1_LABEL, (20, 134, 200, 22));
             s.pw1 = ctl(
@@ -243,7 +243,7 @@ unsafe extern "system" fn recover_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
                 WS_EX_CLIENTEDGE,
                 hwnd,
                 R_PW1,
-                (20, 158, 484, 30),
+                (20, 158, 500, 30),
             );
             ctl("STATIC", "确认新的登录密码", SS_LEFT, 0, hwnd, R_PW2_LABEL, (20, 200, 200, 22));
             s.pw2 = ctl(
@@ -253,11 +253,11 @@ unsafe extern "system" fn recover_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
                 WS_EX_CLIENTEDGE,
                 hwnd,
                 R_PW2,
-                (20, 224, 484, 30),
+                (20, 224, 500, 30),
             );
-            s.error = ctl("STATIC", "", SS_LEFT, 0, hwnd, R_ERROR, (20, 262, 484, 40));
-            s.submit = ctl("BUTTON", "重设登录密码并解锁", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, hwnd, R_SUBMIT, (20, 312, 200, 38));
-            ctl("BUTTON", "取消", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, R_CANCEL, (232, 312, 100, 38));
+            s.error = ctl("STATIC", "", SS_LEFT, 0, hwnd, R_ERROR, (20, 262, 500, 40));
+            s.submit = ctl("BUTTON", "重设登录密码并解锁", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, hwnd, R_SUBMIT, (212, 312, 200, 36));
+            ctl("BUTTON", "取消", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, R_CANCEL, (420, 312, 100, 36));
 
             let font = app::state().font;
             ui::apply_font_to(
@@ -328,27 +328,6 @@ fn do_reset(hwnd: HWND) {
 
 fn st_recover(hwnd: HWND) -> &'static mut RecoverState {
     unsafe { ui::state_ref::<RecoverState>(hwnd) }
-}
-
-/// 对话框内创建控件的通用辅助。
-fn ctl(
-    class: &str,
-    text: &str,
-    style: u32,
-    ex: u32,
-    parent: HWND,
-    id: usize,
-    r: (i32, i32, i32, i32),
-) -> HWND {
-    let handle = ui::create_window(class, text, WS_CHILD | WS_VISIBLE | style, ex, parent, id, 0, 0, 10, 10);
-    ui::move_to(
-        handle,
-        ui::scale(r.0),
-        ui::scale(r.1),
-        ui::scale(r.2),
-        ui::scale(r.3),
-    );
-    handle
 }
 
 #[allow(dead_code)]

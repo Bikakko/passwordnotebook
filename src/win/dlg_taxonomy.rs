@@ -7,7 +7,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::DefWindowProcW;
 
 use super::app;
-use super::{dialog, sys::*, ui};
+use super::{dialog, sys::*, ui::{self, ctl}};
 
 const CLASS: &str = "PnbDlgTaxonomy";
 
@@ -51,7 +51,7 @@ pub fn show(owner: HWND) {
         },
         error: HWND::default(),
     });
-    dialog::open(CLASS, "管理分类与标签", owner, wnd_proc, state, 640, 500);
+    dialog::open(CLASS, "管理分类与标签", owner, wnd_proc, state, 640, 540);
 }
 
 fn st(hwnd: HWND) -> &'static mut TaxonomyState {
@@ -74,26 +74,6 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
-}
-
-fn ctl(
-    class: &str,
-    text: &str,
-    style: u32,
-    ex: u32,
-    parent: HWND,
-    id: usize,
-    r: (i32, i32, i32, i32),
-) -> HWND {
-    let handle = ui::create_window(class, text, WS_CHILD | WS_VISIBLE | style, ex, parent, id, 0, 0, 10, 10);
-    ui::move_to(
-        handle,
-        ui::scale(r.0),
-        ui::scale(r.1),
-        ui::scale(r.2),
-        ui::scale(r.3),
-    );
-    handle
 }
 
 fn on_create(hwnd: HWND, lparam: LPARAM) {
@@ -131,9 +111,9 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
         ID_CAT_LIST,
         (20, 126, 280, 230),
     );
-    ctl("BUTTON", "添加", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CAT_ADD, (20, 366, 86, 34));
-    ctl("BUTTON", "重命名", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CAT_RENAME, (114, 366, 92, 34));
-    ctl("BUTTON", "删除", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CAT_DELETE, (214, 366, 86, 34));
+    ctl("BUTTON", "添加", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CAT_ADD, (20, 366, 86, 36));
+    ctl("BUTTON", "重命名", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CAT_RENAME, (114, 366, 92, 36));
+    ctl("BUTTON", "删除", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CAT_DELETE, (214, 366, 86, 36));
 
     // ---- 标签列 ----
     ctl("STATIC", "标签", SS_LEFT, 0, hwnd, ID_TAG_LABEL, (330, 62, 100, 22));
@@ -155,12 +135,12 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
         ID_TAG_LIST,
         (330, 126, 280, 230),
     );
-    ctl("BUTTON", "添加", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_TAG_ADD, (330, 366, 86, 34));
-    ctl("BUTTON", "重命名", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_TAG_RENAME, (424, 366, 92, 34));
-    ctl("BUTTON", "删除", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_TAG_DELETE, (524, 366, 86, 34));
+    ctl("BUTTON", "添加", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_TAG_ADD, (330, 366, 86, 36));
+    ctl("BUTTON", "重命名", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_TAG_RENAME, (424, 366, 92, 36));
+    ctl("BUTTON", "删除", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_TAG_DELETE, (524, 366, 86, 36));
 
-    s.error = ctl("STATIC", "", SS_LEFT, 0, hwnd, ID_ERROR, (20, 408, 590, 40));
-    ctl("BUTTON", "关闭", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, hwnd, ID_CLOSE, (500, 442, 110, 36));
+    s.error = ctl("STATIC", "", SS_LEFT, 0, hwnd, ID_ERROR, (20, 410, 460, 40));
+    ctl("BUTTON", "关闭", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, hwnd, ID_CLOSE, (510, 462, 110, 36));
 
     let font = app::state().font;
     ui::apply_font_to(

@@ -129,6 +129,8 @@ pub const LB_GETSEL: u32 = 0x0187;
 pub const LB_GETCOUNT: u32 = 0x018B;
 pub const LB_GETTEXTLEN: u32 = 0x018A;
 pub const LB_GETTEXT: u32 = 0x0189;
+/// 列表框的横向滚动范围(配合 WS_HSCROLL)。
+pub const LB_SETHORIZONTALEXTENT: u32 = 0x0194;
 pub const LB_SETITEMDATA: u32 = 0x0199;
 pub const LB_GETITEMDATA: u32 = 0x0198;
 

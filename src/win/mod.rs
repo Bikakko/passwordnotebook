@@ -13,6 +13,7 @@ pub mod hello;
 pub mod idle;
 pub mod sys;
 pub mod timefmt;
+pub mod tokens;
 pub mod ui;
 
 mod dialog;
