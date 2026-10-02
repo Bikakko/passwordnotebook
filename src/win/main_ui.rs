@@ -106,6 +106,8 @@ const ID_TRANSFER_BTN: usize = 2220;
 const ID_FAV_ONLY_BTN: usize = 2221;
 /// 工具栏「新建」按钮(与右键菜单共用 `new_entry`)。
 const ID_NEW_BTN: usize = 2222;
+/// 主列表没有可显示的条目时的空状态提示。
+const ID_EMPTY_HINT: usize = 2223;
 
 const ID_BIN_TITLE: usize = 2301;
 const ID_BIN_HINT: usize = 2302;
@@ -114,6 +116,8 @@ const ID_BIN_RESTORE_BTN: usize = 2304;
 const ID_BIN_PURGE_BTN: usize = 2305;
 const ID_BIN_EMPTY_BTN: usize = 2306;
 const ID_BIN_BACK_BTN: usize = 2307;
+/// 回收站为空的提示(没有条目时才显示)。
+const ID_BIN_EMPTY_HINT: usize = 2308;
 
 const TIMER_CLIPBOARD: usize = 2;
 const TIMER_IDLE: usize = 3;
@@ -174,6 +178,8 @@ pub struct MainUi {
     pub list: HWND,
     pub sort_combo: HWND,
     pub status: HWND,
+    /// 主列表为空时居中显示的引导文字。
+    pub empty_hint: HWND,
 
     pub bin_title: HWND,
     pub bin_hint: HWND,
@@ -182,6 +188,8 @@ pub struct MainUi {
     pub bin_purge_btn: HWND,
     pub bin_empty_btn: HWND,
     pub bin_back_btn: HWND,
+    /// 回收站为空时居中显示的提示文字。
+    pub bin_empty_hint: HWND,
 
     /// 条目列表当前显示顺序对应的条目 id。
     rows: Vec<String>,
@@ -240,6 +248,7 @@ impl MainUi {
             list: zero,
             sort_combo: zero,
             status: zero,
+            empty_hint: zero,
             bin_title: zero,
             bin_hint: zero,
             bin_list: zero,
@@ -247,6 +256,7 @@ impl MainUi {
             bin_purge_btn: zero,
             bin_empty_btn: zero,
             bin_back_btn: zero,
+            bin_empty_hint: zero,
             rows: Vec::new(),
             bin_rows: Vec::new(),
             clipboard_deadline: None,
@@ -271,9 +281,9 @@ const ALL_CONTROL_IDS: &[usize] = &[
     ID_GEN_BTN, ID_BIN_BTN, ID_TAXONOMY_BTN, ID_TRANSFER_BTN, ID_FAV_ONLY_BTN, ID_NEW_BTN,
     ID_SETTINGS_BTN, ID_LOCK_BTN,
     ID_SEARCH, ID_CAT_TABS, ID_TAG_LABEL, ID_TAG_LIST, ID_LIST, ID_SORT_COMBO,
-    ID_STATUS,
+    ID_STATUS, ID_EMPTY_HINT,
     ID_BIN_TITLE, ID_BIN_HINT, ID_BIN_LIST, ID_BIN_RESTORE_BTN, ID_BIN_PURGE_BTN,
-    ID_BIN_EMPTY_BTN, ID_BIN_BACK_BTN,
+    ID_BIN_EMPTY_BTN, ID_BIN_BACK_BTN, ID_BIN_EMPTY_HINT,
 ];
 
 /// 给所有控件套用当前字体(DPI 变化时重新调用)。
@@ -313,6 +323,11 @@ pub fn on_ctlcolor_static(hwnd: HWND, hdc_raw: usize, control_raw: isize) -> isi
 
 fn text(parent: HWND, s: &str, id: usize) -> HWND {
     ui::create_window("STATIC", s, WS_CHILD | SS_LEFT, 0, parent, id, 0, 0, 10, 10)
+}
+
+/// 空状态提示:文本在整行宽度里居中。
+fn center_text(parent: HWND, s: &str, id: usize) -> HWND {
+    ui::create_window("STATIC", s, WS_CHILD | SS_CENTER, 0, parent, id, 0, 0, 10, 10)
 }
 
 fn button(parent: HWND, s: &str, style: u32, id: usize) -> HWND {
@@ -377,27 +392,27 @@ pub fn on_create(hwnd: HWND, lparam: LPARAM) {
     s.unlock_title = text(hwnd, "解锁密码本", ID_UNLOCK_TITLE);
     s.unlock_hint = text(
         hwnd,
-        "输入登录密码以解锁。若本机开启了免密解锁,在系统未锁屏前可直接进入。",
+        "输入登录密码解锁。",
         ID_UNLOCK_HINT,
     );
-    s.unlock_path_label = text(hwnd, "数据库文件", ID_UNLOCK_PATH_LABEL);
+    s.unlock_path_label = text(hwnd, "密码本文件", ID_UNLOCK_PATH_LABEL);
     s.unlock_path = text(hwnd, "", ID_UNLOCK_PATH);
     s.unlock_pw_label = text(hwnd, "登录密码", ID_UNLOCK_PW_LABEL);
     s.unlock_pw = edit(hwnd, ES_PASSWORD, ID_UNLOCK_PW);
     s.unlock_show = checkbox(hwnd, "显示密码", ID_UNLOCK_SHOW);
     s.unlock_btn = button(hwnd, "解锁", BS_DEFPUSHBUTTON, ID_UNLOCK_BTN);
     s.hello_btn = button(hwnd, "使用 Windows Hello 解锁", BS_PUSHBUTTON, ID_HELLO_BTN);
-    s.forgot_btn = button(hwnd, "忘记登录密码?", BS_PUSHBUTTON, ID_FORGOT_BTN);
+    s.forgot_btn = button(hwnd, "忘记登录密码？", BS_PUSHBUTTON, ID_FORGOT_BTN);
     s.goto_create_btn = button(hwnd, "创建新密码本", BS_PUSHBUTTON, ID_GOTO_CREATE_BTN);
     s.unlock_error = text(hwnd, "", ID_UNLOCK_ERROR);
 
     s.create_title = text(hwnd, "创建新密码本", ID_CREATE_TITLE);
     s.create_hint = text(
         hwnd,
-        "密码本用登录密码加密,文件可拷贝到任意 Windows 电脑上用同一登录密码打开。登录密码不会被保存,请务必牢记。",
+        "密码本用登录密码加密，拷到任意电脑都能打开。登录密码不会被保存，请务必牢记。",
         ID_CREATE_HINT,
     );
-    s.create_path_label = text(hwnd, "数据库文件", ID_CREATE_PATH_LABEL);
+    s.create_path_label = text(hwnd, "密码本文件", ID_CREATE_PATH_LABEL);
     s.create_path = text(hwnd, "", ID_CREATE_PATH);
     s.create_pw_label = text(hwnd, "登录密码", ID_CREATE_PW_LABEL);
     s.create_pw = edit(hwnd, ES_PASSWORD, ID_CREATE_PW);
@@ -411,7 +426,7 @@ pub fn on_create(hwnd: HWND, lparam: LPARAM) {
     s.new_btn = button(hwnd, "新建", BS_PUSHBUTTON, ID_NEW_BTN);
     s.gen_btn = button(hwnd, "生成密码", BS_PUSHBUTTON, ID_GEN_BTN);
     s.bin_btn = button(hwnd, "回收站", BS_PUSHBUTTON, ID_BIN_BTN);
-    s.taxonomy_btn = button(hwnd, "分类标签", BS_PUSHBUTTON, ID_TAXONOMY_BTN);
+    s.taxonomy_btn = button(hwnd, "分类与标签", BS_PUSHBUTTON, ID_TAXONOMY_BTN);
     s.transfer_btn = button(hwnd, "导入/导出", BS_PUSHBUTTON, ID_TRANSFER_BTN);
     s.fav_only_btn = button(hwnd, FAV_ONLY_LABEL, BS_AUTOCHECKBOX, ID_FAV_ONLY_BTN);
     s.settings_btn = button(hwnd, "设置", BS_PUSHBUTTON, ID_SETTINGS_BTN);
@@ -446,6 +461,8 @@ pub fn on_create(hwnd: HWND, lparam: LPARAM) {
         10,
     );
     s.status = text(hwnd, "", ID_STATUS);
+    // 空状态:默认隐藏,列表为空时由 refresh_list / refresh_bin 显示出来。
+    s.empty_hint = center_text(hwnd, "还没有条目。点「新建」开始记录。", ID_EMPTY_HINT);
 
     ui::listview_set_extended_style(s.list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
     for (i, &(title, width, _)) in MAIN_LIST_COLUMNS.iter().enumerate() {
@@ -455,7 +472,7 @@ pub fn on_create(hwnd: HWND, lparam: LPARAM) {
     s.bin_title = text(hwnd, "回收站", ID_BIN_TITLE);
     s.bin_hint = text(
         hwnd,
-        "删除的记录会先进入回收站,可随时恢复;超过保留期的记录会在下次解锁时自动彻底删除。",
+        "删除的条目先放进回收站，可随时恢复；超过保留期会在下次解锁时彻底删除。",
         ID_BIN_HINT,
     );
     s.bin_list = listview(hwnd, ID_BIN_LIST);
@@ -463,6 +480,8 @@ pub fn on_create(hwnd: HWND, lparam: LPARAM) {
     s.bin_purge_btn = button(hwnd, "彻底删除", BS_PUSHBUTTON, ID_BIN_PURGE_BTN);
     s.bin_empty_btn = button(hwnd, "清空回收站", BS_PUSHBUTTON, ID_BIN_EMPTY_BTN);
     s.bin_back_btn = button(hwnd, "返回列表", BS_PUSHBUTTON, ID_BIN_BACK_BTN);
+    // 空状态:默认隐藏,由 refresh_bin 按回收站条数显示。
+    s.bin_empty_hint = center_text(hwnd, "回收站是空的。", ID_BIN_EMPTY_HINT);
 
     ui::listview_set_extended_style(s.bin_list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
     for (i, &(title, width, _)) in BIN_LIST_COLUMNS.iter().enumerate() {
@@ -531,6 +550,10 @@ pub fn apply_mode(hwnd: HWND) {
     ] {
         ui::set_visible(c, bin);
     }
+    // 空状态跟着数据走,不能按形态无条件显示:apply_mode 总是在 refresh_* 之后调用,
+    // 无条件显示会把 refresh_* 刚算好的结论覆盖掉(列表里明明有条目却盖着「还没有条目」)。
+    ui::set_visible(s.empty_hint, main && s.rows.is_empty());
+    ui::set_visible(s.bin_empty_hint, bin && s.bin_rows.is_empty());
 
     // Windows Hello 按钮只在解锁界面出现(且要有可用的免密缓存)。
     // 注意:必须在**所有**形态下显式设置它 —— 只写 `if unlock` 的话,
@@ -617,6 +640,13 @@ fn layout_inner(hwnd: HWND) {
         place(s.bin_hint, pad, pad + scale(34), w, scale(44));
         let list_h = (ch - pad * 2 - scale(82) - scale(48)).max(scale(80));
         place(s.bin_list, pad, pad + scale(82), w, list_h);
+        place(
+            s.bin_empty_hint,
+            pad,
+            pad + scale(82) + list_h / 2 - scale(12),
+            w,
+            scale(24),
+        );
         let bin_percents: Vec<i32> = BIN_LIST_COLUMNS.iter().map(|c| c.2).collect();
         set_list_columns(s.bin_list, w, &bin_percents);
         let by = ch - pad - scale(36);
@@ -695,6 +725,14 @@ fn layout_inner(hwnd: HWND) {
     let list_h = (body_h - tabs_h - scale(4)).max(scale(60));
     // 列表占满整行宽度(开关只占页签那一行,不与列表抢位置)。
     place(s.list, tabs_x, list_y, tabs_w, list_h);
+    // 空状态提示叠在列表正中:列表此时没有内容,不会互相遮挡。
+    place(
+        s.empty_hint,
+        tabs_x,
+        list_y + list_h / 2 - scale(12),
+        tabs_w,
+        scale(24),
+    );
     if app::state().settings.column_widths.len() == MAIN_LIST_COLUMNS.len() {
         for (index, &logical_w) in app::state().settings.column_widths.iter().enumerate() {
             let target_w = scale(logical_w).max(scale(20));
@@ -845,6 +883,12 @@ fn refresh_list(hwnd: HWND) {
     let selected = selected_entry_id(hwnd);
     let s = st(hwnd);
 
+    // 空状态的提示语要区分原因,先把两份计数取出来(条目引用借到手后就不好再取)。
+    let (vault_empty, no_favorites) = {
+        let vault = &app::state().vault;
+        (vault.entry_count() == 0, !vault.active_entries().any(|e| e.favorite))
+    };
+
     let tab = ui::tabs_index(s.cat_tabs);
     let tag = ui::listbox_text(s.tag_list, ui::listbox_index(s.tag_list));
     let query = ui::get_text(s.search).trim().to_lowercase();
@@ -901,6 +945,23 @@ fn refresh_list(hwnd: HWND) {
         }
     }
 
+    // 空状态:提示要说清"为什么空"。库是空的才引导新建;
+    // 勾了「只看收藏」又确实没有收藏,就说明收藏;其余都是筛选没命中。
+    let empty = s.rows.is_empty();
+    if empty {
+        ui::set_text(
+            s.empty_hint,
+            if vault_empty {
+                "还没有条目。点「新建」开始记录。"
+            } else if ui::is_checked(s.fav_only_btn) && no_favorites {
+                "还没有收藏的条目。"
+            } else {
+                "没有符合条件的条目。"
+            },
+        );
+    }
+    ui::set_visible(s.empty_hint, empty);
+
     update_status(hwnd);
 }
 
@@ -936,6 +997,8 @@ fn refresh_bin(hwnd: HWND) {
         s.bin_rows.push(entry.id.clone());
     }
 
+    ui::set_visible(s.bin_empty_hint, s.bin_rows.is_empty());
+
     update_status(hwnd);
 }
 
@@ -945,7 +1008,7 @@ fn update_status(hwnd: HWND) {
     let total = vault.entry_count();
     let bin = vault.deleted_count();
     let bin_part = if bin > 0 {
-        format!(";回收站 {bin} 条")
+        format!(" · 回收站 {bin} 条")
     } else {
         String::new()
     };
@@ -953,9 +1016,9 @@ fn update_status(hwnd: HWND) {
     let favorites = vault.active_entries().filter(|e| e.favorite).count();
     let fav_part = if ui::is_checked(s.fav_only_btn) {
         if favorites == 0 {
-            "  ·  还没有收藏:在列表里右键条目,选「收藏」".to_string()
+            " · 还没有收藏：在列表里右键选「收藏」".to_string()
         } else {
-            format!(";收藏 {favorites} 条")
+            format!(" · 收藏 {favorites} 条")
         }
     } else {
         String::new()
@@ -970,7 +1033,7 @@ fn update_status(hwnd: HWND) {
     ui::set_text(
         s.status,
         &format!(
-            "共 {total} 条,当前显示 {}{bin_part}{fav_part}{}  ·  {path}",
+            "共 {total} 条，显示 {}{bin_part}{fav_part}{} · {path}",
             s.rows.len(),
             unsaved_note(),
         ),
@@ -984,7 +1047,7 @@ fn update_status(hwnd: HWND) {
 /// 消失的时刻(用户刚看到一条「保存失败」,下一手操作就把提示擦掉,等于没提示)。
 fn unsaved_note() -> &'static str {
     if app::state().vault.has_unsaved_changes() {
-        "  ⚠ 有改动未能保存到磁盘,锁定或退出会丢失,请先解决磁盘写入失败"
+        " · ⚠ 有改动未保存；锁定或退出会丢失"
     } else {
         ""
     }
@@ -1008,10 +1071,9 @@ fn confirm_discard_unsaved(hwnd: HWND, what: &str) -> bool {
         Err(e) => ui::confirm(
             hwnd,
             &format!(
-                "有改动没能保存到磁盘({e})。\n\n{what}会丢掉这些改动,它们只存在于内存里。\n\
-                 仍然继续吗?(建议先检查磁盘空间与同步状态,必要时重启程序)"
+                "有改动未保存（{e}）。\n\n{what}会丢弃这些改动，确定继续吗？"
             ),
-            "改动尚未保存",
+            "改动未保存",
         ),
     }
 }
@@ -1072,10 +1134,10 @@ pub fn on_command(hwnd: HWND, id: usize, code: u16) {
             let s = st(hwnd);
             let value = ui::get_secret(s.create_pw);
             let hint = if value.is_empty() {
-                "建议至少 12 位,混合大小写字母、数字与符号。".to_string()
+                "建议至少 12 位，混合大小写字母、数字与符号。".to_string()
             } else {
                 let r = strength::evaluate(&value);
-                format!("强度:{} · {}", r.label, r.hint)
+                format!("强度：{} · {}", r.label, r.hint)
             };
             ui::set_text(s.create_strength, &hint);
         }
@@ -1141,7 +1203,7 @@ pub fn on_command(hwnd: HWND, id: usize, code: u16) {
                 None
             };
             if let Some(id) = id {
-                if ui::confirm(hwnd, "彻底删除后无法恢复,确定继续吗?", "彻底删除") {
+                if ui::confirm(hwnd, "彻底删除后无法恢复，确定继续吗？", "彻底删除") {
                     if let Err(e) = app::state().vault.purge(&id) {
                         report_save_failed(hwnd, &e);
                     }
@@ -1153,7 +1215,7 @@ pub fn on_command(hwnd: HWND, id: usize, code: u16) {
             if app::state().vault.deleted_count() == 0 {
                 return;
             }
-            if ui::confirm(hwnd, "将彻底删除回收站中的所有记录,确定继续吗?", "清空回收站") {
+            if ui::confirm(hwnd, "将彻底删除回收站中的所有条目，确定继续吗？", "清空回收站") {
                 if let Err(e) = app::state().vault.empty_bin() {
                     report_op_failed(hwnd, &e, "清空失败");
                 }
@@ -1443,7 +1505,7 @@ const CMD_MOVE_BASE: usize = 4000;
 const CMD_MOVE_NONE: usize = 4999;
 
 fn category_add(hwnd: HWND) {
-    let Some(name) = dlg_input::show(hwnd, "新建分类", "请输入分类名称:", "") else {
+    let Some(name) = dlg_input::show(hwnd, "新建分类", "请输入分类名称：", "") else {
         return;
     };
     match app::state().vault.add_category(&name) {
@@ -1470,10 +1532,10 @@ fn current_category(hwnd: HWND) -> Option<String> {
 
 fn category_rename(hwnd: HWND) {
     let Some(old) = current_category(hwnd) else {
-        ui::info(hwnd, "请先选中一个分类标签页。", "提示");
+        ui::info(hwnd, "请先选中一个分类。", "提示");
         return;
     };
-    let Some(new) = dlg_input::show(hwnd, "重命名分类", "新的分类名称:", &old) else {
+    let Some(new) = dlg_input::show(hwnd, "重命名分类", "新的分类名称：", &old) else {
         return;
     };
     match app::state().vault.rename_category(&old, &new) {
@@ -1487,7 +1549,7 @@ fn category_rename(hwnd: HWND) {
 
 fn category_delete(hwnd: HWND) {
     let Some(name) = current_category(hwnd) else {
-        ui::info(hwnd, "请先选中一个分类标签页。", "提示");
+        ui::info(hwnd, "请先选中一个分类。", "提示");
         return;
     };
 
@@ -1498,9 +1560,9 @@ fn category_delete(hwnd: HWND) {
         .count();
 
     let message = if affected == 0 {
-        format!("确定删除分类「{name}」吗?")
+        format!("确定删除分类「{name}」吗？")
     } else {
-        format!("确定删除分类「{name}」吗?该分类下的 {affected} 条记录会变成「未分类」,记录本身不会丢失。")
+        format!("确定删除分类「{name}」吗？该分类下的 {affected} 个条目会移到「未分类」。")
     };
     if !ui::confirm(hwnd, &message, "删除分类") {
         return;
@@ -1696,7 +1758,7 @@ fn unlock_with_hello(hwnd: HWND) {
         return;
     };
     let Some((dek, _, _)) = dpapi::load(header.vault_id, header.key_generation) else {
-        set_unlock_error(hwnd, "本机免密缓存已失效,请输入登录密码。");
+        set_unlock_error(hwnd, "免密缓存已失效，请输入登录密码。");
         return;
     };
 
@@ -1706,7 +1768,7 @@ fn unlock_with_hello(hwnd: HWND) {
 
     if !hello::request(app::state().main, "验证身份以解锁登录密码") {
         st(hwnd).pending_hello_dek = None;
-        set_unlock_error(hwnd, "无法启动 Windows Hello 验证,请输入登录密码。");
+        set_unlock_error(hwnd, "无法启动 Windows Hello 验证，请输入登录密码。");
         return;
     }
 
@@ -1718,7 +1780,7 @@ fn finish_hello(hwnd: HWND, verified: bool) {
     let dek = st(hwnd).pending_hello_dek.take();
 
     if !verified {
-        set_unlock_error(hwnd, "验证未通过,请输入登录密码。");
+        set_unlock_error(hwnd, "验证未通过，请输入登录密码。");
         return;
     }
 
@@ -1835,7 +1897,7 @@ fn create_vault(hwnd: HWND) {
     let fail = |msg: &str| ui::set_text(st(hwnd).create_error, msg);
 
     if password.chars().count() < 6 {
-        fail("登录密码太短,请至少使用 6 位字符。");
+        fail("登录密码太短，请至少使用 6 位字符。");
         return;
     }
     if password != confirm {
@@ -1845,7 +1907,7 @@ fn create_vault(hwnd: HWND) {
 
     let target = crate::paths::vault_path();
     if target.exists() {
-        fail("数据库已存在,请重新启动程序后解锁。");
+        fail("密码本文件已存在，请重启程序后解锁。");
         return;
     }
 
@@ -1855,13 +1917,13 @@ fn create_vault(hwnd: HWND) {
     let recovery_code = match VaultService::create_new(&target, &password) {
         Ok(code) => code,
         Err(e) => {
-            fail(&format!("创建失败:{e}"));
+            fail(&format!("创建失败（{e}）"));
             return;
         }
     };
 
     if let Err(e) = app::state().vault.open(&target, &password) {
-        fail(&format!("创建后打开失败:{e}"));
+        fail(&format!("创建后打开失败（{e}）"));
         return;
     }
 
@@ -1893,6 +1955,7 @@ fn lock_vault(hwnd: HWND, may_prompt: bool) {
         s.bin_rows.clear();
         ui::listview_clear(s.list);
         ui::listview_clear(s.bin_list);
+        // 空状态提示不必单独处理:紧接着的 apply_mode 会按新形态统一设置显隐。
         ui::set_text(s.status, "");
     }
 
@@ -1926,9 +1989,8 @@ fn report_op_failed(hwnd: HWND, e: &crate::error::VaultError, title: &str) {
 pub(crate) fn save_failure_text(e: &crate::error::VaultError) -> String {
     if app::state().vault.has_unsaved_changes() {
         format!(
-            "{e}\n\n改动仍保留在内存里,尚未写入密码文件。\
-             请检查磁盘空间、目录权限或同步冲突,解决后重新保存任意一条即可一并写入。\
-             在那之前请不要锁定或退出程序。"
+            "{e}\n\n改动还在内存里，没有写入密码本文件。\
+             解决写入问题后随便保存一条即可写入；在那之前不要锁定或退出。"
         )
     } else {
         e.to_string()
@@ -1938,7 +2000,7 @@ pub(crate) fn save_failure_text(e: &crate::error::VaultError) -> String {
 /// 对话框错误栏空间有限时用的一句话版本(附在主错误信息后面)。
 pub(crate) fn save_failure_inline(e: &crate::error::VaultError) -> String {
     if app::state().vault.has_unsaved_changes() {
-        format!("{e}  (改动已留在内存里,尚未写入文件)")
+        format!("{e}（改动在内存里，未写入文件）")
     } else {
         e.to_string()
     }
@@ -1999,7 +2061,7 @@ fn delete_selected(hwnd: HWND) {
     let title = with_entry(hwnd, &id, |e| display_title(e)).unwrap_or_default();
     if !ui::confirm(
         hwnd,
-        &format!("确定要把「{title}」移到回收站吗?", ),
+        &format!("确定要把「{title}」移到回收站吗？"),
         "删除",
     ) {
         return;
@@ -2018,7 +2080,7 @@ fn toggle_favorite_selected(hwnd: HWND) {
     match app::state().vault.toggle_favorite(&id) {
         Ok(true) => {
             refresh_list(hwnd);
-            flash_status(hwnd, "已收藏,列表中会置顶显示");
+            flash_status(hwnd, "已收藏，列表中置顶显示");
         }
         Ok(false) => {
             refresh_list(hwnd);
@@ -2040,7 +2102,7 @@ fn copy_password(hwnd: HWND) {
         return;
     };
     if password.is_empty() {
-        ui::info(hwnd, "这条记录没有填写密码。", "提示");
+        ui::info(hwnd, "这个条目没有填写密码。", "提示");
         return;
     }
 
@@ -2055,7 +2117,7 @@ fn copy_password(hwnd: HWND) {
             password,
         ));
         ui::set_timer(hwnd, TIMER_CLIPBOARD, 1000);
-        format!("已复制密码,{seconds} 秒后自动清空剪贴板")
+        format!("已复制密码，{seconds} 秒后清空剪贴板")
     } else {
         st(hwnd).clipboard_deadline = None;
         "已复制密码".to_string()
@@ -2071,7 +2133,7 @@ fn copy_username(hwnd: HWND) {
         return;
     };
     if username.is_empty() {
-        ui::info(hwnd, "这条记录没有填写用户名。", "提示");
+        ui::info(hwnd, "这个条目没有填写用户名。", "提示");
         return;
     }
     clipboard::set_text(&username);
@@ -2092,7 +2154,7 @@ fn copy_selected_url(hwnd: HWND) {
 
     let url = url.trim().to_string();
     if url.is_empty() {
-        ui::info(hwnd, "这条记录没有填写网址。", "提示");
+        ui::info(hwnd, "这个条目没有填写网址。", "提示");
         return;
     }
 
@@ -2114,13 +2176,13 @@ fn open_selected_url(hwnd: HWND) {
     };
 
     if url.trim().is_empty() {
-        ui::info(hwnd, "这条记录没有填写网址。", "提示");
+        ui::info(hwnd, "这个条目没有填写网址。", "提示");
         return;
     }
 
     match ui::open_url_in_browser(&url) {
-        Ok(()) => flash_status(hwnd, "已在默认浏览器中打开网址"),
-        Err(reason) => ui::info(hwnd, &reason, "无法打开网址"),
+        Ok(()) => flash_status(hwnd, "已在默认浏览器打开"),
+        Err(reason) => ui::warn(hwnd, &reason, "打开网址失败"),
     }
 }
 

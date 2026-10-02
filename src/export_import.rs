@@ -51,7 +51,7 @@ pub const MAX_IMPORT_ENTRIES: usize = 100_000;
 /// 体积上限的提示文案(带上实际大小,方便判断是超了一点还是差很远)。
 fn too_large(actual: u64) -> VaultError {
     VaultError::Invalid(format!(
-        "文件太大了({}),单个文件最多支持 {}。请确认选中的确实是导出的密码文件。",
+        "文件太大了（{}），单个文件最多 {}。请确认选中的是密码本文件。",
         human_size(actual),
         human_size(MAX_IMPORT_BYTES),
     ))
@@ -59,7 +59,7 @@ fn too_large(actual: u64) -> VaultError {
 
 fn too_many_entries(actual: usize) -> VaultError {
     VaultError::Invalid(format!(
-        "文件里的条目太多了({} 条),一次最多导入 {} 条。",
+        "文件里条目太多（{} 条），一次最多导入 {} 条。",
         actual, MAX_IMPORT_ENTRIES
     ))
 }
@@ -102,8 +102,8 @@ impl Format {
     /// 界面下拉框里的文字。
     pub fn label(self) -> &'static str {
         match self {
-            Format::Csv => "CSV(Excel 可打开)",
-            Format::Json => "JSON(完整备份)",
+            Format::Csv => "CSV（Excel 可直接打开）",
+            Format::Json => "JSON（完整备份）",
         }
     }
 
@@ -146,9 +146,9 @@ pub enum DuplicateStrategy {
 impl DuplicateStrategy {
     pub fn label(self) -> &'static str {
         match self {
-            DuplicateStrategy::Append => "全部新增(不比对)",
+            DuplicateStrategy::Append => "全部新增",
             DuplicateStrategy::Skip => "跳过重复项",
-            DuplicateStrategy::Overwrite => "重复项用文件内容覆盖",
+            DuplicateStrategy::Overwrite => "用文件内容覆盖",
         }
     }
 }
@@ -184,9 +184,9 @@ impl ImportOutcome {
             parts.push(format!("跳过 {} 条", self.skipped));
         }
         if parts.is_empty() {
-            "没有可导入的记录。".to_string()
+            "没有可导入的条目。".to_string()
         } else {
-            parts.join(",")
+            parts.join("、")
         }
     }
 }
@@ -240,7 +240,7 @@ pub fn import_from_path(path: &Path) -> Result<Vec<Entry>> {
 pub fn parse(text: &str, hint: Option<Format>) -> Result<Vec<Entry>> {
     let trimmed = text.trim_start_matches('\u{feff}');
     if trimmed.trim().is_empty() {
-        return Err(VaultError::Invalid("文件里没有任何内容。".into()));
+        return Err(VaultError::Invalid("文件是空的。".into()));
     }
     if text.len() as u64 > MAX_IMPORT_BYTES {
         return Err(too_large(text.len() as u64));
@@ -266,7 +266,7 @@ fn decode_utf8(bytes: &[u8]) -> Result<Zeroizing<String>> {
     match std::str::from_utf8(bytes) {
         Ok(text) => Ok(Zeroizing::new(text.to_string())),
         Err(e) => Err(VaultError::Invalid(format!(
-            "文件不是 UTF-8 编码(第 {} 字节处出错)。请在 Excel 里用「CSV UTF-8(逗号分隔)」重新保存,或先转成 UTF-8 再导入。",
+            "文件不是 UTF-8 编码（第 {} 字节）。请在 Excel 里用「CSV UTF-8（逗号分隔）」重新保存，或转成 UTF-8 再导入。",
             e.valid_up_to() + 1
         ))),
     }
@@ -499,7 +499,7 @@ fn parse_csv(text: &str) -> Result<Vec<Entry>> {
     let header_index = records
         .iter()
         .position(|r| r.iter().any(|c| !c.trim().is_empty()))
-        .ok_or_else(|| VaultError::Invalid("文件里没有任何内容。".into()))?;
+        .ok_or_else(|| VaultError::Invalid("文件是空的。".into()))?;
 
     let header: Vec<Option<Field>> = records[header_index].iter().map(|h| field_from_key(h)).collect();
 
@@ -508,7 +508,7 @@ fn parse_csv(text: &str) -> Result<Vec<Entry>> {
         .any(|f| matches!(f, Some(Field::Title) | Some(Field::Username) | Some(Field::Password)))
     {
         return Err(VaultError::Invalid(
-            "识别不出表头。第一行需要包含标题/名称、用户名或密码之类的列名。".into(),
+            "认不出表头。第一行要有标题、用户名或密码等列名。".into(),
         ));
     }
 
@@ -532,7 +532,7 @@ fn parse_csv(text: &str) -> Result<Vec<Entry>> {
     }
 
     if out.is_empty() {
-        return Err(VaultError::Invalid("表头之后没有任何数据行。".into()));
+        return Err(VaultError::Invalid("表头下面没有数据。".into()));
     }
     Ok(out)
 }
@@ -709,13 +709,13 @@ fn parse_json(text: &str) -> Result<Vec<Entry>> {
             Some(Value::Array(items)) => items,
             _ => {
                 return Err(VaultError::Invalid(
-                    "JSON 里找不到 entries 数组(可以导出为 CSV 再试)。".into(),
+                    "JSON 里找不到 entries 数组（可先导出为 CSV）。".into(),
                 ));
             }
         },
         _ => {
             return Err(VaultError::Invalid(
-                "JSON 顶层既不是对象也不是数组。".into(),
+                "JSON 顶层不是对象也不是数组。".into(),
             ));
         }
     };
@@ -734,7 +734,7 @@ fn parse_json(text: &str) -> Result<Vec<Entry>> {
     }
 
     if out.is_empty() {
-        return Err(VaultError::Invalid("JSON 里没有任何可导入的条目。".into()));
+        return Err(VaultError::Invalid("JSON 里没有可导入的条目。".into()));
     }
     Ok(out)
 }

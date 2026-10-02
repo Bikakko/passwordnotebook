@@ -136,7 +136,7 @@ impl VaultService {
         let dek = Zeroizing::new(crypto::random(KEY_LEN)?);
         let recovery_code = recovery::generate()?;
         let normalized = recovery::normalize(&recovery_code)
-            .ok_or_else(|| VaultError::Crypto("恢复码生成异常。".into()))?;
+            .ok_or_else(|| VaultError::Crypto("恢复码生成失败。".into()))?;
 
         let document = Document::default();
         // 整份库的明文(JSON)在堆上只活这一小会儿,用完立刻抹掉。
@@ -194,7 +194,7 @@ impl VaultService {
 
     pub fn open_with_recovery_code(&mut self, path: &Path, code: &str) -> Result<()> {
         let normalized = recovery::normalize(code)
-            .ok_or(VaultError::WrongSecret("恢复码格式不正确,请检查后重试。"))?;
+            .ok_or(VaultError::WrongSecret("恢复码格式不正确。"))?;
 
         let file = VaultFile::read(path)?;
         let h = &file.header;
@@ -222,7 +222,7 @@ impl VaultService {
                 &file.payload,
                 &file.header.payload_aad(),
             )
-            .map_err(|_| VaultError::WrongSecret("本机免密缓存已失效,请输入主密码。"))?,
+            .map_err(|_| VaultError::WrongSecret("免密缓存已失效，请输入登录密码。"))?,
         );
 
         let document: Document = serde_json::from_slice(&plain)?;
@@ -308,12 +308,12 @@ impl VaultService {
         }
     }
 
-    // ---------- 主密码 ----------
+    // ---------- 登录密码 ----------
 
     pub fn change_master_password(&mut self, current: &str, new: &str) -> Result<()> {
         let path = self.path.clone().ok_or(VaultError::Locked)?;
         if !Self::verify_master_password(&path, current) {
-            return Err(VaultError::WrongSecret("当前主密码不正确。"));
+            return Err(VaultError::WrongSecret("当前登录密码不正确。"));
         }
 
         self.flush_pending_before_slot_write();
@@ -414,7 +414,7 @@ impl VaultService {
 
         let code = recovery::generate()?;
         let normalized = recovery::normalize(&code)
-            .ok_or_else(|| VaultError::Crypto("恢复码生成异常。".into()))?;
+            .ok_or_else(|| VaultError::Crypto("恢复码生成失败。".into()))?;
 
         // 同 change_master_password:先在临时头部上算好,失败不碰 self.file。
         let mut header = file.header.clone();
@@ -965,6 +965,6 @@ fn unwrap_with_secret(
     let kek = Zeroizing::new(crypto::derive_key(secret, salt, m_cost_kib, t_cost, p_cost)?);
     match crypto::open(&kek[..], nonce, wrapped, aad) {
         Ok(key) if key.len() == KEY_LEN => Ok(Zeroizing::new(key)),
-        _ => Err(VaultError::WrongSecret("主密码或恢复码不正确。")),
+        _ => Err(VaultError::WrongSecret("登录密码或恢复码不正确。")),
     }
 }

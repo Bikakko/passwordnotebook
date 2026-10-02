@@ -83,7 +83,7 @@ pub fn store(
     let protected = protect(dek)?;
 
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("创建目录 {} 失败:{e}", dir.display()))?;
+        std::fs::create_dir_all(dir).map_err(|e| format!("创建目录 {} 失败（{e}）", dir.display()))?;
     }
 
     let mut out = Vec::with_capacity(25 + protected.len());
@@ -94,7 +94,7 @@ pub fn store(
     out.extend_from_slice(&(protected.len() as u32).to_le_bytes());
     out.extend_from_slice(&protected);
 
-    write_atomic(&path, &out).map_err(|e| format!("写入 {} 失败:{e}", path.display()))
+    write_atomic(&path, &out).map_err(|e| format!("写入 {} 失败（{e}）", path.display()))
 }
 
 /// 读取缓存;vault_id / key_generation 不匹配或解密失败时返回 None。

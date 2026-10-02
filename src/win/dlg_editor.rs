@@ -86,7 +86,7 @@ pub fn show(
         error: HWND::default(),
     });
 
-    let title = if existing.is_some() { "编辑记录" } else { "新建记录" };
+    let title = if existing.is_some() { "编辑条目" } else { "新建条目" };
     let state = dialog::open(CLASS, title, owner, wnd_proc, state, 580, 780);
 
     if state.accepted {
@@ -150,7 +150,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     label(hwnd, "标题 *", ID_TITLE_LABEL, (20, 14, 200, 22));
     s.title = ctl("EDIT", "", WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, hwnd, ID_TITLE, (20, 36, 540, 30));
 
-    label(hwnd, "用户名 / 账号", ID_USER_LABEL, (20, 76, 200, 22));
+    label(hwnd, "用户名/账号", ID_USER_LABEL, (20, 76, 200, 22));
     s.username = ctl("EDIT", "", WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, hwnd, ID_USER, (20, 98, 540, 30));
 
     label(hwnd, "密码", ID_PW_LABEL, (20, 138, 200, 22));
@@ -165,7 +165,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     label(hwnd, "分类", ID_CAT_LABEL, (20, 316, 200, 22));
     s.category = ctl("COMBOBOX", "", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, 0, hwnd, ID_CAT, (20, 338, 540, 200));
 
-    label(hwnd, "标签(按住 Ctrl 可多选)", ID_TAGS_LABEL, (20, 374, 300, 22));
+    label(hwnd, "标签（按住 Ctrl 可多选）", ID_TAGS_LABEL, (20, 374, 300, 22));
     s.tags = ctl(
         "LISTBOX",
         "",
@@ -257,7 +257,7 @@ fn update_strength(hwnd: HWND) {
         "尚未填写密码".to_string()
     } else {
         let r = strength::evaluate(&value);
-        format!("强度:{} · {}", r.label, r.hint)
+        format!("强度：{} · {}", r.label, r.hint)
     };
     ui::set_text(s.strength, &text);
 }

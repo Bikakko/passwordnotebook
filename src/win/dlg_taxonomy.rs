@@ -103,7 +103,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
 
     ctl(
         "STATIC",
-        "在这里建好分类和标签;写条目时只能从已有项里选择,不会随手多出新的。",
+        "在这里管理分类和标签；条目里只能选已有的项。",
         SS_LEFT,
         0,
         hwnd,
@@ -221,7 +221,7 @@ fn on_command(hwnd: HWND, id: usize, code: u16) {
         ID_CAT_RENAME => {
             let index = ui::listbox_index(s.categories.list);
             if index < 0 {
-                ui::set_text(s.error, "请先在左边的列表里选中要重命名的分类。");
+                ui::set_text(s.error, "请先选中要重命名的分类。");
                 return;
             }
             let old = ui::listbox_text(s.categories.list, index);
@@ -244,7 +244,7 @@ fn on_command(hwnd: HWND, id: usize, code: u16) {
         ID_TAG_RENAME => {
             let index = ui::listbox_index(s.tags.list);
             if index < 0 {
-                ui::set_text(s.error, "请先在右边的列表里选中要重命名的标签。");
+                ui::set_text(s.error, "请先选中要重命名的标签。");
                 return;
             }
             let old = ui::listbox_text(s.tags.list, index);

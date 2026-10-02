@@ -323,8 +323,7 @@ pub fn open_url_in_browser(raw: &str) -> Result<(), String> {
     use windows::Win32::UI::Shell::ShellExecuteW;
 
     let url = crate::url::normalize_http_url(raw).ok_or_else(|| {
-        "这条记录里的网址不能直接打开。\n\n只支持 http / https 链接(没写协议的会按 \
-         https 补全);本地路径、file:、javascript: 这类地址不会交给系统执行。"
+        "这个网址打不开。\n\n只支持 http/https 链接（没写协议按 https 补全）；本地路径、file:、javascript: 不会交给系统打开。"
             .to_string()
     })?;
 
@@ -347,7 +346,7 @@ pub fn open_url_in_browser(raw: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "系统没能打开浏览器(ShellExecute 返回 {})。请确认默认浏览器可用。",
+            "没能打开浏览器（错误码 {}），请确认默认浏览器可用。",
             result.0 as usize
         ))
     }

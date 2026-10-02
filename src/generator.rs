@@ -57,7 +57,7 @@ pub fn generate(options: &Options) -> Result<String> {
             .filter(|p| !p.is_empty())
             .collect();
         if pools.is_empty() {
-            return Err(VaultError::Invalid("字符集为空,无法生成密码。".into()));
+            return Err(VaultError::Invalid("没有可用的字符集。".into()));
         }
     }
 

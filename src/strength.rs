@@ -1,4 +1,4 @@
-//! 主密码强度评估(粗略估计,用于界面提示)。
+//! 登录密码强度评估（粗略估计，用于界面提示）。
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Strength {
@@ -12,7 +12,7 @@ pub fn evaluate(password: &str) -> Strength {
         return Strength {
             score: 0,
             label: "未输入",
-            hint: "建议至少 12 位,混合大小写字母、数字与符号。",
+            hint: "建议至少 12 位，混合大小写字母、数字与符号。",
         };
     }
 
@@ -53,9 +53,9 @@ pub fn evaluate(password: &str) -> Strength {
         _ => "很强",
     };
     let hint = if score <= 1 {
-        "建议至少 12 位,混合大小写字母、数字与符号。"
+        "建议至少 12 位，混合大小写字母、数字与符号。"
     } else {
-        "主密码一旦忘记,只能通过恢复码找回。"
+        "忘记登录密码时，用恢复码找回。"
     };
 
     Strength { score, label, hint }

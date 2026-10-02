@@ -8,6 +8,6 @@ fn main() {
 
 #[cfg(not(windows))]
 fn main() {
-    eprintln!("Password Notebook 是 Windows 原生程序,当前平台不受支持。");
+    eprintln!("PasswordNotebook 是 Windows 原生程序，当前平台不受支持。");
     std::process::exit(1);
 }

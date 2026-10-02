@@ -21,13 +21,11 @@ const C_COPY: usize = 3;
 const C_SAVE: usize = 4;
 const C_OK: usize = 5;
 const C_CONFIRM: usize = 6;
-const C_WARN: usize = 7;
 
 struct CodeState {
     code: String,
     confirm: HWND,
     ok: HWND,
-    warn: HWND,
 }
 
 pub fn show_code(owner: HWND, code: &str, initial: bool) {
@@ -35,7 +33,6 @@ pub fn show_code(owner: HWND, code: &str, initial: bool) {
         code: code.to_string(),
         confirm: HWND::default(),
         ok: HWND::default(),
-        warn: HWND::default(),
     });
     dialog::open(
         CLASS_CODE,
@@ -44,7 +41,7 @@ pub fn show_code(owner: HWND, code: &str, initial: bool) {
         code_proc,
         state,
         560,
-        420,
+        300,
     );
 }
 
@@ -57,12 +54,12 @@ unsafe extern "system" fn code_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
 
             ctl(
                 "STATIC",
-                "这是找回登录密码的唯一凭证。请抄写或保存到其他安全的地方;忘记登录密码且丢失恢复码后,数据将无法恢复。",
+                "请保存恢复码，这是登录密码的唯一找回方式。",
                 SS_LEFT,
                 0,
                 hwnd,
                 C_HINT,
-                (20, 16, 504, 96),
+                (20, 16, 504, 44),
             );
             // 用多行显示:恢复码有 39 个字符,单行会被截断,用户照着抄就抄不全。
             let code_edit = ctl(
@@ -72,31 +69,21 @@ unsafe extern "system" fn code_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                 WS_EX_CLIENTEDGE,
                 hwnd,
                 C_CODE,
-                (20, 122, 504, 60),
+                (20, 70, 504, 60),
             );
-            ctl("BUTTON", "复制恢复码", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, C_COPY, (20, 192, 150, 36));
-            ctl("BUTTON", "另存为文本…", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, C_SAVE, (182, 192, 160, 36));
-            ctl(
-                "STATIC",
-                "提示:恢复码不区分大小写,可省略连字符。",
-                SS_LEFT,
-                0,
-                hwnd,
-                C_HINT + 100,
-                (20, 232, 504, 26),
-            );
-            // 必须显式确认已抄写,否则「完成」按钮不可用 ——
+            ctl("BUTTON", "复制恢复码", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, C_COPY, (20, 142, 150, 36));
+            ctl("BUTTON", "另存为文本…", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, C_SAVE, (182, 142, 160, 36));
+            // 必须显式确认已保存,否则「完成」按钮不可用 ——
             // 避免用户在没抄下来的情况下一路点完,之后忘记登录密码就真进不去了。
             s.confirm = ctl(
                 "BUTTON",
-                "我已抄写并妥善保管恢复码",
+                "我已妥善保存恢复码",
                 WS_TABSTOP | BS_AUTOCHECKBOX,
                 0,
                 hwnd,
                 C_CONFIRM,
-                (20, 266, 460, 30),
+                (20, 192, 460, 30),
             );
-            s.warn = ctl("STATIC", "", SS_LEFT, 0, hwnd, C_WARN, (20, 300, 504, 26));
             s.ok = ctl(
                 "BUTTON",
                 "完成",
@@ -104,16 +91,12 @@ unsafe extern "system" fn code_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                 0,
                 hwnd,
                 C_OK,
-                (20, 332, 210, 38),
+                (20, 234, 210, 38),
             );
             ui::enable(s.ok, false);
 
             let font = app::state().font;
-            ui::apply_font_to(
-                hwnd,
-                &[C_HINT, C_CODE, C_COPY, C_SAVE, C_OK, C_HINT + 100, C_CONFIRM, C_WARN],
-                font,
-            );
+            ui::apply_font_to(hwnd, &[C_HINT, C_CODE, C_COPY, C_SAVE, C_OK, C_CONFIRM], font);
             ui::set_focus(s.confirm);
             let _ = code_edit;
             LRESULT(0)
@@ -129,21 +112,8 @@ unsafe extern "system" fn code_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                     clipboard::set_text(&s.code);
                 }
                 (C_SAVE, BN_CLICKED) => save_code(hwnd, &s.code),
-                (C_CONFIRM, BN_CLICKED) => {
-                    let confirmed = is_confirmed(s);
-                    ui::enable(s.ok, confirmed);
-                    if confirmed {
-                        ui::set_text(s.warn, "");
-                    }
-                }
-                (C_OK, BN_CLICKED) => {
-                    let s = st_code(hwnd);
-                    if !is_confirmed(s) {
-                        ui::set_text(s.warn, "请先勾选上面的确认项,再点「完成」。");
-                        return LRESULT(0);
-                    }
-                    ui::destroy_window(hwnd);
-                }
+                (C_CONFIRM, BN_CLICKED) => ui::enable(s.ok, is_confirmed(s)),
+                (C_OK, BN_CLICKED) => ui::destroy_window(hwnd),
                 (IDCANCEL, BN_CLICKED) => close_with_warning(hwnd),
                 _ => {}
             }
@@ -168,17 +138,14 @@ fn is_confirmed(s: &CodeState) -> bool {
 /// 直接关闭(点 X 或按 ESC)时的兜底提醒:恢复码没抄下来就关,风险很大。
 fn close_with_warning(hwnd: HWND) {
     let s = st_code(hwnd);
-    if !is_confirmed(s)
-        && !ui::confirm(
-            hwnd,
-            "恢复码还没有确认保存。\n\n关闭后如果忘记登录密码,数据将无法恢复。确定要关闭吗?",
-            "恢复码未保存",
-        )
-    {
+    if !is_confirmed(s) && !ui::confirm(hwnd, RECOVERY_UNSAVED_MESSAGE, "注意") {
         return;
     }
     ui::destroy_window(hwnd);
 }
+
+/// 恢复码还没保存就关闭时的确认文案。
+const RECOVERY_UNSAVED_MESSAGE: &str = "恢复码还没保存，关闭后无法再查看。确定关闭吗？";
 
 fn save_code(hwnd: HWND, code: &str) {
     let Some(path) = ui::pick_file(
@@ -191,14 +158,14 @@ fn save_code(hwnd: HWND, code: &str) {
     };
 
     let content = format!(
-        "Password Notebook 恢复码\r\n生成时间:{}\r\n\r\n{}\r\n\r\n提示:忘记登录密码时,用此恢复码即可重设登录密码。请妥善保管。\r\n",
+        "PasswordNotebook 恢复码\r\n生成时间：{}\r\n\r\n{}\r\n\r\n忘记登录密码时，用此恢复码重设登录密码。\r\n",
         super::timefmt::local_string(crate::model::now_secs()),
         code
     );
 
     match std::fs::write(&path, content) {
-        Ok(()) => ui::info(hwnd, "已保存。", "完成"),
-        Err(e) => ui::error(hwnd, &format!("保存失败:{e}"), "错误"),
+        Ok(()) => ui::info(hwnd, "恢复码已保存。", "保存完成"),
+        Err(e) => ui::error(hwnd, &format!("保存失败（{e}）"), "保存失败"),
     }
 }
 
@@ -251,7 +218,7 @@ unsafe extern "system" fn recover_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
 
             ctl(
                 "STATIC",
-                "输入创建密码本时保存的恢复码,并设置新的登录密码。恢复码不区分大小写,可省略连字符。",
+                "输入恢复码和新登录密码。恢复码不区分大小写，可省略连字符。",
                 SS_LEFT,
                 0,
                 hwnd,
@@ -325,11 +292,11 @@ fn do_reset(hwnd: HWND) {
     let pw2 = ui::get_secret(s.pw2);
 
     if !recovery::is_valid(&code) {
-        ui::set_text(s.error, "恢复码格式不正确,应为 32 位字符(可含连字符)。");
+        ui::set_text(s.error, "恢复码格式不正确，应为 32 位字符（可含连字符）。");
         return;
     }
     if pw1.chars().count() < 6 {
-        ui::set_text(s.error, "新的登录密码太短,请至少使用 6 位字符。");
+        ui::set_text(s.error, "新的登录密码太短，请至少使用 6 位字符。");
         return;
     }
     if pw1 != pw2 {
@@ -351,7 +318,7 @@ fn do_reset(hwnd: HWND) {
     }
     if let Err(e) = vault.reset_master_password(&pw1) {
         ui::set_text(st_recover(hwnd).submit, "重设登录密码并解锁");
-        ui::set_text(st_recover(hwnd).error, &format!("重设失败:{e}"));
+        ui::set_text(st_recover(hwnd).error, &format!("重设登录密码失败（{e}）"));
         return;
     }
 

@@ -4,11 +4,11 @@ use std::fmt;
 pub enum VaultError {
     /// 文件读写失败。
     Io(std::io::Error),
-    /// 文件结构损坏或不是密码本。
+    /// 文件结构损坏，或不是密码本文件。
     Format(String),
-    /// 加解密失败(除「密码错误」外的技术性失败)。
+    /// 加解密失败（除「密码错误」外的技术性失败）。
     Crypto(String),
-    /// 主密码或恢复码不正确。
+    /// 登录密码或恢复码不正确。
     WrongSecret(&'static str),
     /// 处于锁定状态。
     Locked,
@@ -21,11 +21,11 @@ pub enum VaultError {
 impl fmt::Display for VaultError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            VaultError::Io(e) => write!(f, "文件操作失败:{e}"),
+            VaultError::Io(e) => write!(f, "文件操作失败（{e}）"),
             VaultError::Format(m) => write!(f, "{m}"),
             VaultError::Crypto(m) => write!(f, "{m}"),
             VaultError::WrongSecret(m) => write!(f, "{m}"),
-            VaultError::Locked => write!(f, "密码本处于锁定状态。"),
+            VaultError::Locked => write!(f, "密码本已锁定。"),
             VaultError::NotFound => write!(f, "找不到该条目。"),
             VaultError::Invalid(m) => write!(f, "{m}"),
         }
@@ -42,7 +42,7 @@ impl From<std::io::Error> for VaultError {
 
 impl From<serde_json::Error> for VaultError {
     fn from(value: serde_json::Error) -> Self {
-        VaultError::Format(format!("内容解析失败:{value}"))
+        VaultError::Format(format!("内容解析失败（{value}）"))
     }
 }
 

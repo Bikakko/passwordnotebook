@@ -143,13 +143,13 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     s.quick = ctl("BUTTON", "允许本机免密解锁", WS_TABSTOP | BS_AUTOCHECKBOX, 0, hwnd, ID_QUICK, (20, 36, 300, 24));
     label(
         hwnd,
-        "用 Windows 凭据加密密钥缓存:系统未锁屏时打开程序无需输入登录密码;锁屏或屏保激活后缓存立即失效。",
+        "用系统凭据加密密钥并缓存：未锁屏时打开程序无需输入登录密码，锁屏或屏保后失效。",
         ID_QUICK_HINT,
         (40, 62, 500, 44),
     );
     s.hello = ctl(
         "BUTTON",
-        "免密解锁时要求 Windows Hello 验证(指纹 / 人脸 / PIN)",
+        "免密解锁时要求 Windows Hello 验证（指纹/人脸/PIN）",
         WS_TABSTOP | BS_AUTOCHECKBOX,
         0,
         hwnd,
@@ -163,7 +163,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
         if available {
             "此设备支持 Windows Hello。"
         } else {
-            "此设备当前不可用 Windows Hello(未设置指纹/PIN 或硬件不支持),将回退为输入登录密码。"
+            "此设备不支持 Windows Hello（未设置指纹/PIN 或硬件不支持），改用登录密码。"
         },
         ID_HELLO_HINT,
         (40, 132, 500, 24),
@@ -195,7 +195,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     );
 
     label(hwnd, "回收站", ID_SECTION_4, (20, 330, 200, 24));
-    label(hwnd, "删除的记录保留时长(超期后下次解锁时自动彻底删除)", ID_BIN_LABEL, (20, 356, 500, 22));
+    label(hwnd, "回收站条目保留时长（超期后下次解锁时彻底删除）", ID_BIN_LABEL, (20, 356, 500, 22));
     s.bin = ctl("COMBOBOX", "", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, 0, hwnd, ID_BIN, (20, 378, 500, 200));
     for text in BIN_LABELS {
         ui::combo_add(s.bin, text);
@@ -221,7 +221,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
 
     label(
         hwnd,
-        &format!("数据库文件:{}", crate::paths::vault_display_path()),
+        &format!("密码本文件：{}", crate::paths::vault_display_path()),
         ID_PATH,
         (20, 648, 500, 22),
     );
@@ -268,7 +268,7 @@ fn show_cache_state(hwnd: HWND) {
     if dpapi::load(id, generation).is_none() {
         ui::set_text(
             st(hwnd).error,
-            "提示:本机免密缓存当前不可用,下次启动仍需输入登录密码(点「保存」可重试写入)。",
+            "免密缓存不可用，下次启动仍需输入登录密码（点「保存」重试）。",
         );
     }
 }
@@ -336,7 +336,7 @@ fn save(hwnd: HWND) {
     if let Some(e) = cache_error {
         ui::set_text(
             st(hwnd).error,
-            &format!("设置已保存,但本机免密缓存写入失败,下次仍需输入登录密码:{e}"),
+            &format!("设置已保存，但免密缓存写入失败，下次仍需输入登录密码：{e}"),
         );
         return;
     }
@@ -365,7 +365,7 @@ fn change_password(hwnd: HWND) {
         return;
     }
     if new.chars().count() < 6 {
-        ui::set_text(s.error, "新的登录密码太短,请至少使用 6 位字符。");
+        ui::set_text(s.error, "新的登录密码太短，请至少使用 6 位字符。");
         return;
     }
     if new != confirm {
@@ -387,10 +387,10 @@ fn change_password(hwnd: HWND) {
             ui::set_text(s.error, "登录密码已修改。");
 
             let message = match cache_warning {
-                Some(e) => format!("登录密码已修改。\n\n但本机免密缓存写入失败,下次仍需输入登录密码:{e}"),
+                Some(e) => format!("登录密码已修改。\n\n但免密缓存写入失败，下次仍需输入登录密码：{e}"),
                 None => "登录密码已修改。".to_string(),
             };
-            ui::info(hwnd, &message, "完成");
+            ui::info(hwnd, &message, "修改登录密码完成");
         }
         Err(e) => ui::set_text(st(hwnd).error, &e.to_string()),
     }
@@ -399,7 +399,7 @@ fn change_password(hwnd: HWND) {
 fn regenerate_recovery(hwnd: HWND) {
     if !ui::confirm(
         hwnd,
-        "重新生成后,旧的恢复码将立即失效。确定继续吗?",
+        "重新生成后，旧的恢复码将立即失效。确定继续吗？",
         "重新生成恢复码",
     ) {
         return;
@@ -409,12 +409,12 @@ fn regenerate_recovery(hwnd: HWND) {
         Ok(code) => {
             let cache_warning = refresh_cache();
             let status = match cache_warning {
-                Some(e) => format!("恢复码已更新,但本机免密缓存写入失败:{e}"),
+                Some(e) => format!("恢复码已更新，但免密缓存写入失败：{e}"),
                 None => String::new(),
             };
             ui::set_text(st(hwnd).error, &status);
             dlg_recovery::show_code(hwnd, &code, false);
         }
-        Err(e) => ui::set_text(st(hwnd).error, &format!("生成失败:{e}")),
+        Err(e) => ui::set_text(st(hwnd).error, &format!("生成失败：{e}")),
     }
 }

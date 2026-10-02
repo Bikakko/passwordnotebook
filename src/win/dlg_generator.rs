@@ -136,7 +136,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     );
     ctl(
         "STATIC",
-        "(4 – 256)",
+        "（4 – 256）",
         SS_LEFT,
         0,
         hwnd,
@@ -144,13 +144,13 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
         (152, 64, 100, 22),
     );
 
-    s.upper = ctl("BUTTON", "大写字母 (A-Z)", WS_TABSTOP | BS_AUTOCHECKBOX, 0, hwnd, ID_UPPER, (16, 100, 200, 24));
-    s.lower = ctl("BUTTON", "小写字母 (a-z)", WS_TABSTOP | BS_AUTOCHECKBOX, 0, hwnd, ID_LOWER, (16, 128, 200, 24));
-    s.digits = ctl("BUTTON", "数字 (0-9)", WS_TABSTOP | BS_AUTOCHECKBOX, 0, hwnd, ID_DIGITS, (16, 156, 200, 24));
-    s.symbols = ctl("BUTTON", "符号 (!@#$…)", WS_TABSTOP | BS_AUTOCHECKBOX, 0, hwnd, ID_SYMBOLS, (16, 184, 200, 24));
+    s.upper = ctl("BUTTON", "大写字母（A-Z）", WS_TABSTOP | BS_AUTOCHECKBOX, 0, hwnd, ID_UPPER, (16, 100, 200, 24));
+    s.lower = ctl("BUTTON", "小写字母（a-z）", WS_TABSTOP | BS_AUTOCHECKBOX, 0, hwnd, ID_LOWER, (16, 128, 200, 24));
+    s.digits = ctl("BUTTON", "数字（0-9）", WS_TABSTOP | BS_AUTOCHECKBOX, 0, hwnd, ID_DIGITS, (16, 156, 200, 24));
+    s.symbols = ctl("BUTTON", "符号（!@#$…）", WS_TABSTOP | BS_AUTOCHECKBOX, 0, hwnd, ID_SYMBOLS, (16, 184, 200, 24));
     s.no_ambiguous = ctl(
         "BUTTON",
-        "排除易混淆字符 (l/1/O/0 等)",
+        "排除易混淆字符（l/1/O/0 等）",
         WS_TABSTOP | BS_AUTOCHECKBOX,
         0,
         hwnd,
@@ -249,7 +249,7 @@ fn regenerate(hwnd: HWND) {
             // 不静默:清掉密码并把原因显示出来,别让用户拿到空密码还不知道为什么。
             s.password = Zeroizing::new(String::new());
             ui::set_text(s.output, "");
-            ui::set_text(s.error, &format!("生成失败:{e}"));
+            ui::set_text(s.error, &format!("生成失败：{e}"));
         }
     }
 }

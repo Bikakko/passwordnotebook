@@ -27,14 +27,14 @@ pub const DEFAULT_P_COST: u32 = 4;
 /// 生成 `len` 字节密码学安全随机数。
 pub fn random(len: usize) -> Result<Vec<u8>, VaultError> {
     let mut buf = vec![0u8; len];
-    getrandom::fill(&mut buf).map_err(|e| VaultError::Crypto(format!("随机数生成失败:{e}")))?;
+    getrandom::fill(&mut buf).map_err(|e| VaultError::Crypto(format!("随机数生成失败（{e}）")))?;
     Ok(buf)
 }
 
 /// 生成固定长度随机数组。
 pub fn random_array<const N: usize>() -> Result<[u8; N], VaultError> {
     let mut buf = [0u8; N];
-    getrandom::fill(&mut buf).map_err(|e| VaultError::Crypto(format!("随机数生成失败:{e}")))?;
+    getrandom::fill(&mut buf).map_err(|e| VaultError::Crypto(format!("随机数生成失败（{e}）")))?;
     Ok(buf)
 }
 
@@ -47,13 +47,13 @@ pub fn derive_key(
     p_cost: u32,
 ) -> Result<[u8; KEY_LEN], VaultError> {
     let params = Params::new(m_cost_kib, t_cost, p_cost, Some(KEY_LEN))
-        .map_err(|e| VaultError::Crypto(format!("Argon2 参数无效:{e}")))?;
+        .map_err(|e| VaultError::Crypto(format!("Argon2 参数无效（{e}）")))?;
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
 
     let mut out = [0u8; KEY_LEN];
     argon
         .hash_password_into(secret, salt, &mut out)
-        .map_err(|e| VaultError::Crypto(format!("密钥派生失败:{e}")))?;
+        .map_err(|e| VaultError::Crypto(format!("密钥派生失败（{e}）")))?;
     Ok(out)
 }
 
@@ -79,7 +79,7 @@ pub fn seal(key: &[u8], nonce_bytes: &[u8], plaintext: &[u8], aad: &[u8]) -> Res
 pub fn open(key: &[u8], nonce_bytes: &[u8], ciphertext: &[u8], aad: &[u8]) -> Result<Vec<u8>, VaultError> {
     cipher(key)?
         .decrypt(&nonce(nonce_bytes)?, Payload { msg: ciphertext, aad })
-        .map_err(|_| VaultError::Crypto("认证失败:数据可能被篡改。".into()))
+        .map_err(|_| VaultError::Crypto("认证失败：数据可能被篡改。".into()))
 }
 
 #[cfg(test)]

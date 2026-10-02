@@ -110,7 +110,7 @@ impl VaultHeader {
         }
         if buf[4] != FORMAT_VERSION {
             return Err(VaultError::Format(format!(
-                "不支持的密码本格式版本:{}",
+                "不支持的密码本格式版本：{}",
                 buf[4]
             )));
         }
@@ -130,7 +130,7 @@ impl VaultHeader {
         };
 
         if header.m_cost_kib == 0 || header.t_cost == 0 || header.p_cost == 0 {
-            return Err(VaultError::Format("密码本头部参数无效。".into()));
+            return Err(VaultError::Format("密码本头部无效。".into()));
         }
 
         Ok(header)

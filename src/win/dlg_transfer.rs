@@ -81,7 +81,7 @@ pub fn show(owner: HWND) -> bool {
         changed: false,
     });
 
-    let state = dialog::open(CLASS, "导入 / 导出", owner, wnd_proc, state, 680, 520);
+    let state = dialog::open(CLASS, "导入/导出", owner, wnd_proc, state, 680, 520);
     state.changed
 }
 
@@ -146,7 +146,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
 
     ctl(
         "STATIC",
-        "导出可用于备份或迁移到别的密码管理器;导入支持本程序导出的文件,也能直接读入 Chrome、Edge、Bitwarden、1Password、KeePass、LastPass 导出的 CSV。",
+        "导出用于备份或迁移；导入支持本程序文件，以及 Chrome、Edge、Bitwarden、1Password、KeePass、LastPass 导出的 CSV。",
         SS_LEFT,
         0,
         hwnd,
@@ -169,7 +169,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     );
     s.ack = ctl(
         "BUTTON",
-        "我明白导出文件是明文,会妥善保管",
+        "我明白导出文件是明文，会妥善保管",
         WS_TABSTOP | BS_AUTOCHECKBOX,
         0,
         hwnd,
@@ -178,7 +178,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     );
     ctl(
         "STATIC",
-        "CSV:7 列,Excel 可直接打开,不含时间戳。\r\nJSON:完整备份,保留分类、标签与时间。",
+        "CSV：Excel 可直接打开。\r\nJSON：完整备份，保留分类、标签与时间。",
         SS_LEFT,
         0,
         hwnd,
@@ -188,7 +188,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     ctl("BUTTON", "导出到文件…", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_EXPORT_BTN, (36, 258, 160, 38));
     ctl(
         "STATIC",
-        "回收站中的条目不会被导出。",
+        "回收站里的条目不会被导出。",
         SS_LEFT,
         0,
         hwnd,
@@ -202,7 +202,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     s.strategy = combo(hwnd, ID_IMPORT_STRATEGY, (356, 112, 268, 200));
     ctl(
         "STATIC",
-        "按「标题 + 用户名」判断是否重复(忽略大小写)。\r\n覆盖时:文件里没有密码的条目会保留原密码。",
+        "按「标题 + 用户名」判断重复（忽略大小写）。\r\n覆盖时，文件里没有密码的条目保留原密码。",
         SS_LEFT,
         0,
         hwnd,
@@ -212,7 +212,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     ctl("BUTTON", "从文件导入…", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_IMPORT_BTN, (356, 258, 160, 38));
     ctl(
         "STATIC",
-        "导入前会自动生成 data.pkk.bak 备份,\r\n并为每条记录分配新的 id。",
+        "导入前自动备份原文件为 data.pkk.bak。",
         SS_LEFT,
         0,
         hwnd,
@@ -271,13 +271,13 @@ fn export_to_file(hwnd: HWND) {
     if include_passwords && !ui::is_checked(st(hwnd).ack) {
         ui::set_text(
             st(hwnd).status,
-            "导出明文密码前,请先勾选「我明白导出文件是明文,会妥善保管」。",
+            "请先勾选「我明白导出文件是明文，会妥善保管」。",
         );
         return;
     }
 
     if app::state().vault.entry_count() == 0 {
-        ui::set_text(st(hwnd).status, "密码本里还没有条目,没有可导出的内容。");
+        ui::set_text(st(hwnd).status, "密码本里还没有条目。");
         return;
     }
 
@@ -308,13 +308,13 @@ fn export_to_file(hwnd: HWND) {
 
     match result {
         Ok(count) => {
-            ui::set_text(st(hwnd).status, &format!("已导出 {count} 条记录到 {path}。"));
+            ui::set_text(st(hwnd).status, &format!("已导出 {count} 个条目到 {path}。"));
             let note = if include_passwords {
-                "文件中的密码是明文,请尽快转移到安全位置并删除原文件。"
+                "文件里的密码是明文，请尽快转移到安全位置并删除原文件。"
             } else {
-                "文件中不含密码。"
+                "文件里不含密码。"
             };
-            ui::info(hwnd, &format!("已导出 {count} 条记录。\n\n{note}"), "导出完成");
+            ui::info(hwnd, &format!("已导出 {count} 个条目。\n\n{note}"), "导出完成");
         }
         Err(e) => {
             ui::set_text(st(hwnd).status, &e.to_string());
@@ -336,7 +336,7 @@ fn import_from_file(hwnd: HWND) {
         hwnd,
         false,
         &[
-            ("CSV / JSON 文件 (*.csv;*.json)", "*.csv;*.json"),
+            ("CSV/JSON 文件 (*.csv;*.json)", "*.csv;*.json"),
             ("所有文件 (*.*)", "*.*"),
         ],
         "",
@@ -348,7 +348,7 @@ fn import_from_file(hwnd: HWND) {
         Ok(entries) => entries,
         Err(e) => {
             ui::set_text(st(hwnd).status, &e.to_string());
-            ui::error(hwnd, &e.to_string(), "无法读取该文件");
+            ui::error(hwnd, &e.to_string(), "导入失败");
             return;
         }
     };
@@ -356,11 +356,11 @@ fn import_from_file(hwnd: HWND) {
     let strategy = selected_strategy(hwnd);
     let current = app::state().vault.entry_count();
     let question = format!(
-        "将导入 {} 条记录。\n\n当前密码本里有 {current} 条,重复条目的处理方式:{}。\n\n导入前会把库文件备份为 data.pkk.bak。是否继续?",
+        "将导入 {} 个条目。\n\n当前有 {current} 条，重复条目：{}。\n\n导入前自动备份原文件为 data.pkk.bak。是否继续？",
         entries.len(),
         strategy.label()
     );
-    if !ui::confirm(hwnd, &question, "确认导入") {
+    if !ui::confirm(hwnd, &question, "导入") {
         return;
     }
 
@@ -368,9 +368,9 @@ fn import_from_file(hwnd: HWND) {
     let backup = match app::state().vault.backup_file() {
         Ok(path) => path,
         Err(e) => {
-            let message = format!("无法生成备份({e}),导入已取消,原文件未改动。");
+            let message = format!("备份失败（{e}），导入已取消，原文件未改动。");
             ui::set_text(st(hwnd).status, &message);
-            ui::error(hwnd, &message, "备份失败");
+            ui::error(hwnd, &message, "导入失败");
             return;
         }
     };
@@ -381,7 +381,7 @@ fn import_from_file(hwnd: HWND) {
                 st(hwnd).changed = true;
             }
             let summary = format!(
-                "导入完成:{},原文件已备份为 {}。",
+                "导入完成：{}。备份在 {}。",
                 outcome.summary(),
                 backup.display()
             );
@@ -393,7 +393,7 @@ fn import_from_file(hwnd: HWND) {
             // 所以这里**不能**再教用户去改 .bak 覆盖 —— 程序还在运行时照着做,
             // 会被下一次保存用内存态整份盖掉,反而更危险。
             let message = format!(
-                "{e}\n\n磁盘上的库文件没有被改动,不需要做任何回滚。\n导入前的备份仍保留在:{}",
+                "{e}\n\n磁盘上的密码本文件没有改动，无需回滚。\n导入前的备份仍在：{}",
                 backup.display()
             );
             ui::set_text(st(hwnd).status, &e.to_string());

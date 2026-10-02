@@ -48,7 +48,7 @@ impl VaultFile {
         let payload_len = r.i32()?;
 
         if payload_len < crypto::TAG_LEN as i32 {
-            return Err(VaultError::Format("文件已损坏(载荷长度无效)。".into()));
+            return Err(VaultError::Format("文件已损坏（载荷长度无效）。".into()));
         }
         if r.remaining() < payload_len as usize {
             return Err(VaultError::Format("文件已损坏或被截断。".into()));
