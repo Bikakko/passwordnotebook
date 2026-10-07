@@ -99,6 +99,7 @@ unsafe extern "system" fn code_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             let _ = code_edit;
             LRESULT(0)
         }
+        WM_CTLCOLORSTATIC => LRESULT(ui::static_label_reply(wparam.0)),
         WM_COMMAND => {
             // 注意:id 相同的不同控件会发不同通知码,必须一起判断。
             // (只读输入框的 id 恰好也是 2,它发的 EN_CHANGE 曾被误当成 IDCANCEL。)
@@ -260,6 +261,7 @@ unsafe extern "system" fn recover_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
             ui::set_focus(s.code);
             LRESULT(0)
         }
+        WM_CTLCOLORSTATIC => LRESULT(ui::static_label_reply(wparam.0)),
         WM_COMMAND => {
             let (id, _) = dialog::command_params(wparam);
             match id {

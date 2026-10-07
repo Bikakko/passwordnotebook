@@ -66,6 +66,7 @@ pub const WM_CREATE: u32 = 0x0001;
 pub const WM_DESTROY: u32 = 0x0002;
 pub const WM_SIZE: u32 = 0x0005;
 pub const WM_CLOSE: u32 = 0x0010;
+pub const WM_PAINT: u32 = 0x000F;
 pub const WM_ERASEBKGND: u32 = 0x0014;
 pub const WM_GETMINMAXINFO: u32 = 0x0024;
 pub const WM_CTLCOLORSTATIC: u32 = 0x0138;
@@ -159,6 +160,10 @@ pub const NM_DBLCLK: i32 = -3;
 pub const LVN_GETDISPINFOW: i32 = -177;
 
 // ---------- 列表头控件(Header) ----------
+/// 列头的列数(HDM_FIRST + 0)。
+pub const HDM_GETITEMCOUNT: u32 = 0x1200;
+/// 取列头某一列的矩形(HDM_FIRST + 7)。
+pub const HDM_GETITEMRECT: u32 = 0x1207;
 /// 取列头某一列的文本与格式(HDM_FIRST + 11)。
 pub const HDM_GETITEMW: u32 = 0x120B;
 

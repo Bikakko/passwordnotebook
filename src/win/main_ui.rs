@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::{HWND, LPARAM, RECT};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::HBRUSH;
 use windows::Win32::UI::Controls::NMHDR;
 use windows::Win32::UI::WindowsAndMessaging::MSG;
@@ -520,6 +520,10 @@ pub fn on_create(hwnd: HWND, lparam: LPARAM) {
     // 网格线与列头画刷是固定色的 GDI 对象:建一次用到底。
     s.grid_brush = ui::create_solid_brush(GRIDLINE);
     s.header_brush = ui::create_solid_brush(HEADER_BG);
+
+    // 列头套一层子类化:系统主题的列头接近白色,整块自绘成浅灰底。
+    ui::subclass_header(ui::listview_get_header(s.list), header_proc);
+    ui::subclass_header(ui::listview_get_header(s.bin_list), header_proc);
 
     ui::combo_add(s.sort_combo, "更新时间");
     ui::combo_add(s.sort_combo, "标题");
@@ -1330,56 +1334,6 @@ pub fn on_notify(hwnd: HWND, lparam: LPARAM) -> isize {
         return CDRF_DODEFAULT as isize;
     }
 
-    // 列头自绘:浅灰底 + 深色标题(系统主题的列头接近白色,与内容行区分不开)。
-    // 列头的 NM_CUSTOMDRAW 与 HDN_* 一样由列表视图转发到父窗口。
-    if code == NM_CUSTOMDRAW && header.hwndFrom != list && header.hwndFrom != bin_list {
-        let list_header = ui::listview_get_header(list);
-        let bin_header = ui::listview_get_header(bin_list);
-        if header.hwndFrom == list_header || header.hwndFrom == bin_header {
-            use windows::Win32::Graphics::Gdi::FillRect;
-            use windows::Win32::UI::Controls::{
-                CDDS_ITEMPREPAINT, CDDS_PREPAINT, CDRF_DODEFAULT, CDRF_NOTIFYITEMDRAW,
-                CDRF_SKIPDEFAULT, NMCUSTOMDRAW,
-            };
-
-            let nmcd = unsafe { &*(lparam.0 as *const NMCUSTOMDRAW) };
-            if nmcd.dwDrawStage == CDDS_PREPAINT {
-                return CDRF_NOTIFYITEMDRAW as isize;
-            }
-            if nmcd.dwDrawStage == CDDS_ITEMPREPAINT {
-                let s = st(hwnd);
-                ui::draw_header_item(
-                    header.hwndFrom,
-                    nmcd.hdc,
-                    &nmcd.rc,
-                    nmcd.dwItemSpec as i32,
-                    s.header_brush,
-                    s.grid_brush,
-                );
-                // 最后一列右侧常有几像素留白(列宽总和略窄于控件),也铺上灰底。
-                let col_count = if header.hwndFrom == bin_header {
-                    BIN_LIST_COLUMNS.len()
-                } else {
-                    MAIN_LIST_COLUMNS.len()
-                };
-                if nmcd.dwItemSpec + 1 == col_count {
-                    let (client_w, _) = ui::client_size(header.hwndFrom);
-                    let tail = RECT {
-                        left: nmcd.rc.right,
-                        top: nmcd.rc.top,
-                        right: client_w,
-                        bottom: nmcd.rc.bottom,
-                    };
-                    unsafe {
-                        FillRect(nmcd.hdc, &tail, s.header_brush);
-                    }
-                }
-                return CDRF_SKIPDEFAULT as isize;
-            }
-            return CDRF_DODEFAULT as isize;
-        }
-    }
-
     // 虚拟列表:控件按需索取某行某列的文本(列表建出来时带了 LVS_OWNERDATA)。
     if code == LVN_GETDISPINFOW && (header.hwndFrom == list || header.hwndFrom == bin_list) {
         use windows::core::PWSTR;
@@ -1432,6 +1386,57 @@ pub fn on_notify(hwnd: HWND, lparam: LPARAM) -> isize {
     }
 
     0
+}
+
+/// 列头的窗口过程(子类化):整块自绘,系统主题的画面一概不用。
+unsafe extern "system" fn header_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> LRESULT {
+    match msg {
+        WM_PAINT => {
+            paint_header(hwnd);
+            LRESULT(0)
+        }
+        // 背景由 WM_PAINT 整块覆盖,不让默认擦除先行绘制(避免闪烁)。
+        WM_ERASEBKGND => LRESULT(1),
+        _ => unsafe { windows::Win32::UI::Shell::DefSubclassProc(hwnd, msg, wparam, lparam) },
+    }
+}
+
+/// 画整条列头:浅灰底、每列的标题与右侧分隔线。
+fn paint_header(hwnd: HWND) {
+    use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, FillRect, PAINTSTRUCT};
+
+    let s = st(app::state().main);
+    let (back, separator) = (s.header_brush, s.grid_brush);
+
+    let mut ps = PAINTSTRUCT::default();
+    let hdc = unsafe { BeginPaint(hwnd, &mut ps) };
+
+    let (client_w, client_h) = ui::client_size(hwnd);
+    let full = RECT {
+        left: 0,
+        top: 0,
+        right: client_w,
+        bottom: client_h,
+    };
+    unsafe {
+        FillRect(hdc, &full, back);
+    }
+    for index in 0..ui::header_item_count(hwnd) {
+        if let Some(rect) = ui::header_item_rect(hwnd, index) {
+            ui::draw_header_item(hwnd, hdc, &rect, index, back, separator);
+        }
+    }
+
+    unsafe {
+        let _ = EndPaint(hwnd, &ps);
+    }
 }
 
 /// 用户在主列表中调整了某一列的宽度:读取全部列的物理宽度并转换为 96 DPI 逻辑像素持久化到 data.pkk

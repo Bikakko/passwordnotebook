@@ -109,6 +109,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             on_create(hwnd, lparam);
             LRESULT(0)
         }
+        WM_CTLCOLORSTATIC => LRESULT(ui::static_label_reply(wparam.0)),
         WM_COMMAND => {
             let (id, code) = dialog::command_params(wparam);
             on_command(hwnd, id, code);

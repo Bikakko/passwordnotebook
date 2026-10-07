@@ -20,6 +20,7 @@ use windows::Win32::UI::Controls::{
     LVCOLUMNW_MASK, LVCF_FMT, LVCF_SUBITEM, LVCF_TEXT, LVCF_WIDTH, LVIS_FOCUSED, LVIS_SELECTED,
     LVITEMW,
 };
+use windows::Win32::UI::Shell::SetWindowSubclass;
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -47,6 +48,10 @@ use super::sys::*;
 use super::tokens::*;
 
 pub type WndProc = unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT;
+
+/// 子类化过程的函数指针类型(与 `SetWindowSubclass` 的形参一致)。
+pub type SubclassProc =
+    unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM, usize, usize) -> LRESULT;
 
 /// UTF-16 缓冲区,保证在 CreateWindowExW / RegisterClassW 调用期间指针有效。
 /// 宽字符缓冲。
@@ -792,6 +797,14 @@ pub fn paint_static_label(hdc: HDC, text_color: u32) -> isize {
     }
 }
 
+/// `WM_CTLCOLORSTATIC` 的统一应答(白底窗口):透明文字 + 正文色,返回窗口底色画刷。
+///
+/// 不处理的话,静态文本会按 STATIC 类的默认画面画出一块灰底矩形 ——
+/// 在白色对话框上就是每个标签后面拖一条灰。
+pub fn static_label_reply(hdc_raw: usize) -> isize {
+    paint_static_label(HDC(hdc_raw as *mut c_void), TEXT)
+}
+
 pub fn delete_font(font: HFONT) {
     if !font.is_invalid() {
         unsafe {
@@ -1343,6 +1356,26 @@ pub fn listview_bold_header(list: HWND, bold: HFONT) {
     if !header.is_invalid() {
         send_msg(header, WM_SETFONT, bold.0 as usize, 1);
     }
+}
+
+/// 列头的列数(HDM_GETITEMCOUNT)。
+pub fn header_item_count(header: HWND) -> i32 {
+    send_msg(header, HDM_GETITEMCOUNT, 0, 0) as i32
+}
+
+/// 列头某一列的矩形(HDM_GETITEMRECT,列头客户区坐标)。
+pub fn header_item_rect(header: HWND, index: i32) -> Option<windows::Win32::Foundation::RECT> {
+    let mut rect = windows::Win32::Foundation::RECT::default();
+    let ok = send_msg(header, HDM_GETITEMRECT, index as usize, &mut rect as *mut _ as isize) != 0;
+    ok.then_some(rect)
+}
+
+/// 子类化列头,交给 `proc` 整块自绘。
+///
+/// 列头的 `NM_CUSTOMDRAW` 不会被列表视图转发到父窗口(实测),主题画面就只能
+/// 从 `WM_PAINT` 这一层整个接管。
+pub fn subclass_header(header: HWND, proc: SubclassProc) -> bool {
+    unsafe { SetWindowSubclass(header, Some(proc), 1, 0).as_bool() }
 }
 
 /// 列头某一列的信息(自绘列头用)。
