@@ -668,6 +668,31 @@ pub fn listview_select(hwnd: HWND, index: i32) {
     send_msg(hwnd, LVM_SETITEMSTATE, index as usize, &mut item as *mut _ as isize);
 }
 
+/// 清除列表视图的全部选中与焦点(LVM_SETITEMSTATE 的 wparam=-1 表示「所有项」)。
+///
+/// 虚拟列表会按索引保留控件的选中状态 —— 数据重建后原条目可能已不在原位,
+/// 不显式清除就会把高亮留在别的行上。
+pub fn listview_clear_selection(hwnd: HWND) {
+    let mut item = LVITEMW {
+        mask: LIST_VIEW_ITEM_FLAGS(0),
+        iItem: -1,
+        iSubItem: 0,
+        state: LIST_VIEW_ITEM_STATE_FLAGS(0),
+        stateMask: LIST_VIEW_ITEM_STATE_FLAGS(LVIS_SELECTED.0 | LVIS_FOCUSED.0),
+        pszText: PWSTR::null(),
+        cchTextMax: 0,
+        iImage: 0,
+        lParam: LPARAM(0),
+        iIndent: 0,
+        iGroupId: 0,
+        cColumns: 0,
+        puColumns: std::ptr::null_mut(),
+        piColFmt: std::ptr::null_mut(),
+        iGroup: 0,
+    };
+    send_msg(hwnd, LVM_SETITEMSTATE, usize::MAX, &mut item as *mut _ as isize);
+}
+
 // ---------- 消息框 ----------
 
 pub fn msg_box(owner: HWND, text: &str, title: &str, flags: u32) -> i32 {
@@ -954,6 +979,9 @@ struct LvHitTestInfo {
     flags: u32,
     i_item: i32,
     i_sub_item: i32,
+    /// Vista+ 的 `LVHITTESTINFO` 还有 `iGroup`。未启用分组时恒为 0,但结构体
+    /// 必须留出这块内存 —— 否则将来启用分组时控件会写到结构体外面。
+    i_group: i32,
 }
 
 // ---------- 分类标签条(自绘,Excel 风格)----------
@@ -1260,6 +1288,7 @@ pub fn listview_item_at(list: HWND, screen_pt: POINT) -> i32 {
         flags: 0,
         i_item: -1,
         i_sub_item: 0,
+        i_group: 0,
     };
     send_msg(list, LVM_HITTEST, 0, &mut info as *mut _ as isize) as i32
 }
@@ -1442,8 +1471,8 @@ fn header_item(header: HWND, index: i32) -> HeaderItem {
 
 /// 自绘一个列头项:灰底、右侧分隔线,再用列头当前字体画出标题。
 ///
-/// 只在列头 `NM_CUSTOMDRAW` 的 `CDDS_ITEMPREPAINT` 阶段使用 —— 画完之后
-/// 控件不再默认绘制(调用方返回 `CDRF_SKIPDEFAULT`)。
+/// 由 `main_ui::paint_header`(列头子类化的 `WM_PAINT`)逐列调用 ——
+/// 列头的主题画面整体由那条路径接管(列头的 NM_CUSTOMDRAW 不会转发到父窗口)。
 pub fn draw_header_item(
     header: HWND,
     hdc: HDC,

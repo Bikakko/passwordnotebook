@@ -184,9 +184,10 @@ pub fn sort_scored(entries: &mut [(&Entry, i32)], mode: SortMode) {
 /// 临时的搜索压下去。
 ///
 /// 评分**每条只算一次**再排序,而不是在比较函数里现算:`match_score` 每次调用
-/// 都要把标题/账号/网址/端点/标签/分类/备注各 `to_lowercase()` 一遍(最多 7 次分配),
-/// 而比较次数是 O(n log n) —— 直接在闭包里算等于把同样的字符串转换重复几十遍。
-/// 「装饰-排序-写回」也保持了对相等元素的稳定顺序,与原先 `sort_by` 的结果一致。
+/// 都要把标题/账号/网址/端点/标签/分类/备注挨个过一遍(非 ASCII 数据最多 7 次
+/// `to_lowercase()` 分配),而比较次数是 O(n log n) —— 直接在闭包里算等于把同样的
+/// 字符串转换重复几十遍。「装饰-排序-写回」也保持了对相等元素的稳定顺序,
+/// 与原先 `sort_by` 的结果一致。
 pub fn sort_entries(entries: &mut [&Entry], mode: SortMode, query: &str) {
     let mut keyed: Vec<(&Entry, i32)> = entries
         .iter()

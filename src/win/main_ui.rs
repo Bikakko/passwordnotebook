@@ -967,6 +967,9 @@ fn refresh_list(hwnd: HWND) {
     // 行数没变但内容变了(比如编辑条目)时控件不会自动重画,这里显式刷新。
     ui::listview_refresh(s.list);
 
+    // 先清掉旧选中:虚拟列表按索引保留控件的选中状态,原条目已被筛掉/删除时,
+    // 高亮会留在别的行上;清除之后再按 id 恢复(等价于旧「删光重插」的语义)。
+    ui::listview_clear_selection(s.list);
     if let Some(id) = selected
         && let Some(index) = s.rows.iter().position(|r| *r == id)
     {
@@ -994,6 +997,8 @@ fn refresh_list(hwnd: HWND) {
 }
 
 fn refresh_bin(hwnd: HWND) {
+    // 同 refresh_list:先取当前选中(st 引用不能同时活着)。
+    let selected = selected_bin_entry_id(hwnd);
     let s = st(hwnd);
     let retention = app::state().settings.bin_retention_days;
     let now = crate::model::now_secs();
@@ -1023,6 +1028,15 @@ fn refresh_bin(hwnd: HWND) {
     }
     ui::listview_set_item_count(s.bin_list, items.len());
     ui::listview_refresh(s.bin_list);
+
+    // 选中按 id 恢复;原条目已被恢复/彻底删除时显式清除,
+    // 否则虚拟列表会把高亮按索引留在别的行上。
+    ui::listview_clear_selection(s.bin_list);
+    if let Some(id) = selected
+        && let Some(index) = s.bin_rows.iter().position(|r| *r == id)
+    {
+        ui::listview_select(s.bin_list, index as i32);
+    }
 
     ui::set_visible(s.bin_empty_hint, s.bin_rows.is_empty());
 
@@ -1121,6 +1135,16 @@ fn selected_entry_id(hwnd: HWND) -> Option<String> {
         return None;
     }
     s.rows.get(index as usize).cloned()
+}
+
+/// 回收站列表当前选中的条目 id(同 [`selected_entry_id`],换列表)。
+fn selected_bin_entry_id(hwnd: HWND) -> Option<String> {
+    let s = st(hwnd);
+    let index = ui::listview_selected_index(s.bin_list);
+    if index < 0 {
+        return None;
+    }
+    s.bin_rows.get(index as usize).cloned()
 }
 
 pub(crate) fn with_entry<R>(hwnd: HWND, id: &str, f: impl FnOnce(&Entry) -> R) -> Option<R> {
@@ -1775,7 +1799,9 @@ pub fn on_timer(hwnd: HWND, id: usize) {
         TIMER_IDLE => {
             // 模态对话框(编辑条目、设置等)开着时不锁定:库被锁而对话框仍在,
             // 保存必然失败、用户填的内容白填。对话框关闭后定时器会再评估。
-            if app::state().mode != Mode::Unlocked || dialog::is_modal_open() {
+            // 判据用「库是否解锁」而不是形态:回收站页(Bin)同样握着解锁键,
+            // 原来按 `mode != Unlocked` 判断会把整个回收站页漏掉。
+            if !app::state().vault.is_unlocked() || dialog::is_modal_open() {
                 return;
             }
             if let Some(timeout) = idle_timeout_seconds()
@@ -1828,7 +1854,8 @@ fn idle_timeout_seconds() -> Option<u64> {
 }
 
 pub fn on_session_locked(hwnd: HWND) {
-    if app::state().mode == Mode::Unlocked {
+    // 判据同空闲锁定:回收站页(Bin)也是已解锁状态,不能漏掉。
+    if app::state().vault.is_unlocked() {
         // 锁屏是系统事件,不能弹窗 —— 未落盘的改动会随这次锁定丢失。
         lock_vault(hwnd, false);
     }
