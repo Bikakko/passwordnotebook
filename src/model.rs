@@ -17,6 +17,12 @@ pub struct Entry {
     pub password: Zeroizing<String>,
     #[serde(default)]
     pub url: String,
+    /// API 服务的密钥。与密码同为敏感字段,同样用 `Zeroizing` 管理。
+    #[serde(default)]
+    pub api_key: Zeroizing<String>,
+    /// API 服务的端点(base url)。普通文本,与 `url` 同待遇。
+    #[serde(default)]
+    pub api_endpoint: String,
     #[serde(default)]
     pub notes: String,
     #[serde(default)]
@@ -110,6 +116,8 @@ pub struct Settings {
     pub bin_retention_days: i64,
     /// 窗口置顶。
     pub always_on_top: bool,
+    /// 「只看收藏」筛选开关的最后状态(跟着库走)。
+    pub favorites_only: bool,
     /// 自定义列表各列宽度(逻辑像素, 96 DPI 基准):[标题, 用户名, 网址, 分类, 标签, 更新时间]。
     /// 若为空表示未调整过,使用默认长度与比例。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -125,6 +133,7 @@ impl Default for Settings {
             clipboard_clear_seconds: 20,
             bin_retention_days: 30,
             always_on_top: false,
+            favorites_only: false,
             column_widths: Vec::new(),
         }
     }
@@ -138,8 +147,9 @@ mod tests {
     fn settings_default_and_backward_compatibility() {
         let default_settings = Settings::default();
         assert!(default_settings.column_widths.is_empty());
+        assert!(!default_settings.favorites_only);
 
-        // 旧版本 JSON 没有 column_widths 字段,能正常反序列化
+        // 旧版本 JSON 没有 column_widths / favorites_only 字段,能正常反序列化
         let old_json = r#"{
             "quick_unlock_enabled": true,
             "require_windows_hello": false,
@@ -150,18 +160,21 @@ mod tests {
         }"#;
         let s: Settings = serde_json::from_str(old_json).expect("反序列化旧版设置失败");
         assert!(s.column_widths.is_empty());
+        assert!(!s.favorites_only, "旧库没有该字段时应当作未勾选");
 
         // 默认状态下空 column_widths 不会被序列化出来
         let serialized = serde_json::to_string(&s).expect("序列化失败");
         assert!(!serialized.contains("column_widths"));
 
-        // 自定义列宽时正常序列化与反序列化
+        // 自定义列宽与「只看收藏」时正常序列化与反序列化
         let mut custom = s;
         custom.column_widths = vec![147, 113, 170, 80, 160, 150];
+        custom.favorites_only = true;
         let serialized_custom = serde_json::to_string(&custom).expect("序列化失败");
         assert!(serialized_custom.contains("column_widths"));
         let roundtrip: Settings = serde_json::from_str(&serialized_custom).expect("反序列化失败");
         assert_eq!(roundtrip.column_widths, vec![147, 113, 170, 80, 160, 150]);
+        assert!(roundtrip.favorites_only);
     }
 
     /// 0.1.x 写出的 JSON 没有 favorite 字段;新版必须能读,并当成「未收藏」。
@@ -195,5 +208,39 @@ mod tests {
         let json = serde_json::to_string(&favored).unwrap();
         let back: Entry = serde_json::from_str(&json).unwrap();
         assert!(back.favorite);
+    }
+
+    /// 0.2.x 写出的 JSON 没有 api_key / api_endpoint 字段;新版必须能读,并当成空。
+    #[test]
+    fn entry_without_api_fields_defaults_to_empty() {
+        let old_json = r#"{
+            "id": "abc",
+            "title": "服务",
+            "username": "alice",
+            "password": "pw",
+            "url": "https://example.com",
+            "notes": "",
+            "category": "",
+            "tags": [],
+            "favorite": false,
+            "created": 1,
+            "updated": 2,
+            "deleted": null
+        }"#;
+        let entry: Entry = serde_json::from_str(old_json).expect("旧版条目应能反序列化");
+        assert!(entry.api_key.is_empty(), "缺少 api_key 时应默认为空");
+        assert!(entry.api_endpoint.is_empty(), "缺少 api_endpoint 时应默认为空");
+
+        // 写回时带上新字段,供 0.3.0 起的版本再读。
+        let json = serde_json::to_string(&entry).expect("序列化失败");
+        assert!(json.contains("\"api_key\":\"\""));
+
+        let mut with_api = entry;
+        with_api.api_key = Zeroizing::new("sk-123".into());
+        with_api.api_endpoint = "https://api.example.com/v1".into();
+        let json = serde_json::to_string(&with_api).unwrap();
+        let back: Entry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.api_key.as_str(), "sk-123");
+        assert_eq!(back.api_endpoint, "https://api.example.com/v1");
     }
 }

@@ -70,6 +70,8 @@ fn sample_entry() -> Entry {
         username: "user@example.com".into(),
         password: Zeroizing::new("p,w\"d\n含换行".into()),
         url: "https://example.com/login".into(),
+        api_key: Zeroizing::new("sk-测试\n密钥".into()),
+        api_endpoint: "https://api.example.com/v1".into(),
         category: "工作".into(),
         tags: vec!["重要".into(), "多次使用".into()],
         notes: "第一行\n第二行, 带逗号".into(),
@@ -91,6 +93,8 @@ fn assert_same_identity(a: &Entry, b: &Entry) {
     assert_eq!(a.username, b.username);
     assert_eq!(a.password.as_str(), b.password.as_str());
     assert_eq!(a.url, b.url);
+    assert_eq!(a.api_key.as_str(), b.api_key.as_str());
+    assert_eq!(a.api_endpoint, b.api_endpoint);
     assert_eq!(a.category, b.category);
     assert_eq!(a.tags, b.tags);
     assert_eq!(a.notes, b.notes);
@@ -155,7 +159,7 @@ fn csv_without_passwords_does_not_wipe_existing_passwords_on_overwrite() {
         &file,
         Format::Csv,
         ExportOptions {
-            include_passwords: false,
+            include_secrets: false,
         },
     )
     .unwrap();
@@ -171,6 +175,63 @@ fn csv_without_passwords_does_not_wipe_existing_passwords_on_overwrite() {
 
     let entry = target.active_entries().next().unwrap();
     assert_eq!(entry.password.as_str(), "原密码", "空密码不应覆盖已有密码");
+}
+
+#[test]
+fn csv_without_secrets_keeps_existing_api_key_on_overwrite() {
+    let tmp = TempDir::new("csv-nosecret");
+    let mut source = tmp.vault_with("source.pkk");
+    let mut original = plain_entry("站点", "user", "super-secret");
+    original.api_key = Zeroizing::new("sk-secret".into());
+    source.add_entry(original).unwrap();
+
+    let file = tmp.join("nosecrets.csv");
+    export_import::export_to_path(
+        source.document().unwrap(),
+        &file,
+        Format::Csv,
+        ExportOptions {
+            include_secrets: false,
+        },
+    )
+    .unwrap();
+
+    let mut target = tmp.vault_with("target.pkk");
+    let mut existing = plain_entry("站点", "user", "原密码");
+    existing.api_key = Zeroizing::new("sk-原密钥".into());
+    target.add_entry(existing).unwrap();
+
+    let parsed = export_import::import_from_path(&file).unwrap();
+    assert!(parsed[0].password.is_empty());
+    assert!(parsed[0].api_key.is_empty());
+
+    let outcome = target.import_entries(parsed, DuplicateStrategy::Overwrite).unwrap();
+    assert_eq!(outcome.updated, 1);
+
+    let entry = target.active_entries().next().unwrap();
+    assert_eq!(entry.password.as_str(), "原密码", "空密码不应覆盖已有密码");
+    assert_eq!(entry.api_key.as_str(), "sk-原密钥", "空密钥不应覆盖已有密钥");
+}
+
+#[test]
+fn overwrite_updates_api_endpoint_and_keeps_blank_api_key() {
+    let tmp = TempDir::new("api-overwrite");
+    let mut vault = tmp.vault_with("vault.pkk");
+    let mut original = plain_entry("服务", "u", "pw");
+    original.api_key = Zeroizing::new("sk-old".into());
+    original.api_endpoint = "https://old.example".into();
+    vault.add_entry(original).unwrap();
+
+    let mut incoming = plain_entry("服务", "u", "");
+    incoming.api_endpoint = "https://new.example".into();
+    let outcome = vault
+        .import_entries(vec![incoming], DuplicateStrategy::Overwrite)
+        .unwrap();
+    assert_eq!(outcome.updated, 1);
+
+    let entry = vault.active_entries().next().unwrap();
+    assert_eq!(entry.api_key.as_str(), "sk-old", "空密钥不应覆盖已有密钥");
+    assert_eq!(entry.api_endpoint, "https://new.example", "端点与网址同级,无条件覆盖");
 }
 
 #[test]

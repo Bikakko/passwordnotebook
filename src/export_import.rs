@@ -2,7 +2,7 @@
 //!
 //! 两条通道的分工是刻意分开的:
 //!
-//! - **CSV 面向互操作**:固定 7 列(`Title,Username,Password,Url,Category,Tags,Notes`),
+//! - **CSV 面向互操作**:固定 9 列(0.3.0 起在 `Url` 后多了 `ApiKey,ApiEndpoint`),
 //!   Excel 可直接打开;导入时会按别名表识别 Chrome / Edge / Bitwarden / 1Password /
 //!   KeePass / LastPass 等常见导出文件的表头,不必手工改列名。
 //! - **JSON 面向备份**:完整保留 id、分类、标签与时间戳,便于原样还原。
@@ -29,7 +29,13 @@ pub const JSON_FORMAT_TAG: &str = "password-notebook";
 pub const JSON_FORMAT_VERSION: u32 = 1;
 
 /// CSV 的规范表头(导出时使用;导入时只认别名表,不要求顺序或大小写一致)。
-pub const CSV_HEADER: [&str; 7] = ["Title", "Username", "Password", "Url", "Category", "Tags", "Notes"];
+///
+/// 0.3.0 起在 `Url` 后插入 `ApiKey,ApiEndpoint`;`Password` 与 `ApiKey` 两列
+/// 随「包含明文密码与 API 密钥」选项成对出现或成对省略。认自家旧文件
+/// (0.2.x 的 7 列)的逻辑见 [`is_own_export`]。
+pub const CSV_HEADER: [&str; 9] = [
+    "Title", "Username", "Password", "Url", "ApiKey", "ApiEndpoint", "Category", "Tags", "Notes",
+];
 
 /// 标签在 CSV 单元格内的分隔符(`|` 也接受)。
 pub const TAG_SEPARATOR: char = ';';
@@ -119,15 +125,15 @@ impl Format {
 /// 导出选项。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExportOptions {
-    /// 是否把密码写成明文。关闭时密码列/字段整体省略,而不是留空 ——
-    /// 留空会在「覆盖导入」时被误读成「把密码清空」。
-    pub include_passwords: bool,
+    /// 是否把密码与 API 密钥写成明文。关闭时两者的列/字段整体省略,而不是留空 ——
+    /// 留空会在「覆盖导入」时被误读成「把原值清空」。
+    pub include_secrets: bool,
 }
 
 impl Default for ExportOptions {
     fn default() -> Self {
         Self {
-            include_passwords: true,
+            include_secrets: true,
         }
     }
 }
@@ -139,7 +145,7 @@ pub enum DuplicateStrategy {
     Append,
     /// 已有同名条目则跳过导入项。
     Skip,
-    /// 已有同名条目则用导入项覆盖它(密码为空时不覆盖原密码)。
+    /// 已有同名条目则用导入项覆盖它(密码/API 密钥为空时不覆盖原值)。
     Overwrite,
 }
 
@@ -287,15 +293,16 @@ fn lower(value: &str) -> String {
     value.trim().to_lowercase()
 }
 
-/// CSV 不承载收藏状态:表头固定为 [`CSV_HEADER`] 那 7 列(与 Chrome/Edge 兼容),
-/// 加一列会让别家工具读不懂。要连收藏一起备份,用 JSON 或加密的 `.pkk` 副本。
+/// CSV 不承载收藏状态,表头固定为 [`CSV_HEADER`];`Password` 与 `ApiKey` 两列
+/// 随导出选项成对省略——不含凭据的导出不该漏出任何一种。要连收藏一起备份,
+/// 用 JSON 或加密的 `.pkk` 副本。
 fn export_csv(document: &Document, options: ExportOptions) -> String {
     // 带 BOM:否则 Excel 会把中文按本地代码页解读成乱码。
     let mut out = String::from("\u{feff}");
     let header: Vec<&str> = CSV_HEADER
         .iter()
         .copied()
-        .filter(|c| options.include_passwords || *c != "Password")
+        .filter(|c| options.include_secrets || !matches!(*c, "Password" | "ApiKey"))
         .collect();
     out.push_str(&header.join(","));
     out.push_str("\r\n");
@@ -305,10 +312,14 @@ fn export_csv(document: &Document, options: ExportOptions) -> String {
             entry.title.clone(),
             entry.username.clone(),
         ];
-        if options.include_passwords {
+        if options.include_secrets {
             cells.push(entry.password.as_str().to_string());
         }
         cells.push(entry.url.clone());
+        if options.include_secrets {
+            cells.push(entry.api_key.as_str().to_string());
+        }
+        cells.push(entry.api_endpoint.clone());
         cells.push(entry.category.clone());
         cells.push(entry.tags.join(&TAG_SEPARATOR.to_string()));
         cells.push(entry.notes.clone());
@@ -368,6 +379,10 @@ struct ExportEntry<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     password: Option<&'a str>,
     url: &'a str,
+    /// 与密码同进退:关闭「包含明文密码与 API 密钥」时不写出。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_key: Option<&'a str>,
+    api_endpoint: &'a str,
     category: &'a str,
     tags: &'a [String],
     /// JSON 里显式写出收藏状态(CSV 没有这一列,见 [`export_csv`])。
@@ -394,8 +409,10 @@ fn export_json(document: &Document, options: ExportOptions) -> Result<Zeroizing<
             id: &e.id,
             title: &e.title,
             username: &e.username,
-            password: options.include_passwords.then(|| e.password.as_str()),
+            password: options.include_secrets.then(|| e.password.as_str()),
             url: &e.url,
+            api_key: options.include_secrets.then(|| e.api_key.as_str()),
+            api_endpoint: &e.api_endpoint,
             category: &e.category,
             tags: &e.tags,
             favorite: e.favorite,
@@ -428,6 +445,8 @@ enum Field {
     Username,
     Password,
     Url,
+    ApiKey,
+    ApiEndpoint,
     Category,
     Tags,
     Favorite,
@@ -445,6 +464,8 @@ const PASSWORD_ALIASES: &[&str] = &["password", "pass", "passwd", "loginpassword
 const URL_ALIASES: &[&str] = &[
     "url", "uri", "website", "websiteurl", "weburl", "loginuri", "link", "网址", "网站", "链接", "登录网址",
 ];
+const API_KEY_ALIASES: &[&str] = &["apikey", "api密钥", "密钥"];
+const API_ENDPOINT_ALIASES: &[&str] = &["apiendpoint", "endpoint", "api端点", "端点"];
 const CATEGORY_ALIASES: &[&str] = &["category", "folder", "group", "grouping", "分类", "分组", "文件夹", "目录"];
 const TAGS_ALIASES: &[&str] = &["tags", "tag", "labels", "label", "标签"];
 const FAVORITE_ALIASES: &[&str] = &[
@@ -469,6 +490,8 @@ fn field_from_key(raw: &str) -> Option<Field> {
         (USERNAME_ALIASES, Field::Username),
         (PASSWORD_ALIASES, Field::Password),
         (URL_ALIASES, Field::Url),
+        (API_KEY_ALIASES, Field::ApiKey),
+        (API_ENDPOINT_ALIASES, Field::ApiEndpoint),
         (CATEGORY_ALIASES, Field::Category),
         (TAGS_ALIASES, Field::Tags),
         (FAVORITE_ALIASES, Field::Favorite),
@@ -544,27 +567,46 @@ fn parse_csv(text: &str) -> Result<Vec<Entry>> {
 /// 别人家的导出里 `'=x` 就是一个以单引号开头的真实密码,无条件去前缀会把它吃掉一个字符,
 /// 覆盖导入时就成了「静默改写用户密码」。
 ///
-/// 代价说清楚:如果一个文件既带 BOM、表头又和我们的完全一致,就会被当成自家文件去前缀。
-/// 这种文件实际上就是我们的格式家族(本程序、以及本程序导出后用 Excel「CSV UTF-8」另存的),
-/// 对它们去前缀是必需的 —— 否则 Excel 往返一次就会多出单引号。
+/// 0.3.0 起表头从 7 列变 9 列,0.2.x 导出的旧文件必须继续被认出来 ——
+/// 否则升级后第一次导入自家旧文件,防护前缀就不再还原(值凭空多一个单引号)。
+/// 所以对新旧两代表头都做匹配。
+///
+/// 代价说清楚:如果一个文件既带 BOM、表头又和我们的(任一代表头)完全一致,就会被当成
+/// 自家文件去前缀。这种文件实际上就是我们的格式家族(本程序、以及本程序导出后用
+/// Excel「CSV UTF-8」另存的),对它们去前缀是必需的 —— 否则 Excel 往返一次就会多出单引号。
 fn is_own_export(text: &str, raw_header: &[String]) -> bool {
     if !text.starts_with('\u{feff}') {
         return false;
     }
-    let has_password = raw_header
-        .iter()
-        .any(|h| field_from_key(h) == Some(Field::Password));
-    let expected: Vec<&str> = CSV_HEADER
-        .iter()
-        .copied()
-        .filter(|column| has_password || *column != "Password")
-        .collect();
 
-    raw_header.len() == expected.len()
-        && raw_header
-            .iter()
-            .zip(expected)
-            .all(|(got, want)| normalize_key(got) == normalize_key(want))
+    // 0.2.x 的表头(还没有 API 密钥/端点)。
+    const LEGACY_HEADER: [&str; 7] =
+        ["Title", "Username", "Password", "Url", "Category", "Tags", "Notes"];
+
+    // Password / ApiKey 两列随导出选项成对省略,是否出现由实际表头决定;
+    // 两个判定彼此独立(不要求同时出现)—— 手工在 Excel 里删掉其中一列的文件
+    // 仍按自家处理,防护前缀照常还原,否则值会静默多出一个单引号。
+    let has_password = raw_header.iter().any(|h| normalize_key(h) == "password");
+    let has_api_key = raw_header.iter().any(|h| normalize_key(h) == "apikey");
+
+    [CSV_HEADER.as_slice(), LEGACY_HEADER.as_slice()]
+        .iter()
+        .any(|columns| {
+            let expected: Vec<&str> = columns
+                .iter()
+                .copied()
+                .filter(|column| match *column {
+                    "Password" => has_password,
+                    "ApiKey" => has_api_key,
+                    _ => true,
+                })
+                .collect();
+            raw_header.len() == expected.len()
+                && raw_header
+                    .iter()
+                    .zip(expected)
+                    .all(|(got, want)| normalize_key(got) == normalize_key(want))
+        })
 }
 
 fn entry_from_row(header: &[Option<Field>], record: &[String], unguard: bool) -> Entry {
@@ -586,6 +628,8 @@ fn entry_from_row(header: &[Option<Field>], record: &[String], unguard: bool) ->
             Field::Username => entry.username = value,
             Field::Password => entry.password = Zeroizing::new(value),
             Field::Url => entry.url = value,
+            Field::ApiKey => entry.api_key = Zeroizing::new(value),
+            Field::ApiEndpoint => entry.api_endpoint = value,
             Field::Category => entry.category = value,
             Field::Tags => tags.extend(split_tags(&value)),
             Field::Favorite => entry.favorite = truthy(&value),
@@ -631,6 +675,8 @@ pub(crate) fn is_blank_entry(entry: &Entry) -> bool {
         && entry.username.trim().is_empty()
         && entry.password.is_empty()
         && entry.url.trim().is_empty()
+        && entry.api_key.is_empty()
+        && entry.api_endpoint.trim().is_empty()
         && entry.notes.trim().is_empty()
 }
 
@@ -751,6 +797,8 @@ fn entry_from_object(map: &Map<String, Value>) -> Entry {
             Field::Username => entry.username = as_string(value),
             Field::Password => entry.password = Zeroizing::new(as_string(value)),
             Field::Url => entry.url = as_string(value),
+            Field::ApiKey => entry.api_key = Zeroizing::new(as_string(value)),
+            Field::ApiEndpoint => entry.api_endpoint = as_string(value),
             Field::Category => entry.category = as_string(value),
             Field::Tags => match value {
                 Value::Array(items) => {
@@ -834,6 +882,8 @@ mod tests {
                 username: "a\"b".into(),
                 password: Zeroizing::new("p,w\"d\n换行".into()),
                 url: "https://example.com".into(),
+                api_key: Zeroizing::new("sk-abc".into()),
+                api_endpoint: "https://api.example.com/v1".into(),
                 category: "工作".into(),
                 tags: vec!["重要".into(), "内部".into()],
                 notes: "第一行\n第二行".into(),
@@ -867,6 +917,8 @@ mod tests {
         assert_eq!(parsed[1].title, "带,逗号");
         assert_eq!(parsed[1].username, "a\"b");
         assert_eq!(parsed[1].password.as_str(), "p,w\"d\n换行");
+        assert_eq!(parsed[1].api_key.as_str(), "sk-abc");
+        assert_eq!(parsed[1].api_endpoint, "https://api.example.com/v1");
         assert_eq!(parsed[1].tags, vec!["重要".to_string(), "内部".to_string()]);
         assert_eq!(parsed[1].notes, "第一行\n第二行");
     }
@@ -876,20 +928,37 @@ mod tests {
         let text = export_csv(&sample_document(), ExportOptions::default());
         assert!(text.starts_with('\u{feff}'));
         assert!(text.contains("\r\n"));
-        assert!(text.starts_with("\u{feff}Title,Username,Password,Url,Category,Tags,Notes"));
+        assert!(text.starts_with(
+            "\u{feff}Title,Username,Password,Url,ApiKey,ApiEndpoint,Category,Tags,Notes"
+        ));
     }
 
     #[test]
-    fn csv_omits_password_column_when_disabled() {
+    fn csv_omits_secret_columns_when_disabled() {
         let document = sample_document();
         let text = export_csv(
             &document,
             ExportOptions {
-                include_passwords: false,
+                include_secrets: false,
             },
         );
-        assert!(!text.contains("secret"));
-        assert!(text.starts_with("\u{feff}Title,Username,Url,Category,Tags,Notes"));
+        assert!(!text.contains("secret"), "密码不该写出");
+        assert!(!text.contains("sk-abc"), "API 密钥不该写出");
+        assert!(text.starts_with(
+            "\u{feff}Title,Username,Url,ApiEndpoint,Category,Tags,Notes"
+        ));
+
+        // 数据行必须与 7 列表头逐列对齐:去掉两列后最容易错位的就是这里。
+        let parsed = parse_csv(&text).unwrap();
+        let entry = parsed.iter().find(|e| e.title == "带,逗号").unwrap();
+        assert_eq!(entry.username, "a\"b");
+        assert_eq!(entry.url, "https://example.com");
+        assert_eq!(entry.api_endpoint, "https://api.example.com/v1");
+        assert_eq!(entry.category, "工作");
+        assert_eq!(entry.tags, vec!["重要".to_string(), "内部".to_string()]);
+        assert_eq!(entry.notes, "第一行\n第二行");
+        assert!(entry.password.is_empty());
+        assert!(entry.api_key.is_empty());
     }
 
     #[test]
@@ -962,6 +1031,81 @@ mod tests {
         assert_eq!(own[0].password.as_str(), "=keep", "自家文件要还原前缀");
     }
 
+    /// 0.2.x 的 7 列表头、含/不含密码两形态,升级后都必须继续被当自家文件。
+    #[test]
+    fn legacy_seven_column_headers_are_still_recognized() {
+        let with_pw = "\u{feff}Title,Username,Password,Url,Category,Tags,Notes\r\n\
+                       T,u,'=keep,https://x.example,工作,,\r\n";
+        let parsed = parse_csv(with_pw).unwrap();
+        assert_eq!(parsed[0].password.as_str(), "=keep");
+
+        let without_pw = "\u{feff}Title,Username,Url,Category,Tags,Notes\r\n\
+                          T,'=user,https://x.example,工作,,\r\n";
+        let parsed = parse_csv(without_pw).unwrap();
+        assert_eq!(parsed[0].username, "=user", "旧版不含密码的导出也要还原前缀");
+    }
+
+    /// 0.3.0 的 9 列表头、含/不含凭据两形态,同样算自家文件。
+    #[test]
+    fn new_nine_column_headers_are_recognized() {
+        let with_secrets = "\u{feff}Title,Username,Password,Url,ApiKey,ApiEndpoint,Category,Tags,Notes\r\n\
+                            T,u,'=keep,https://x.example,'=key,https://api.x.example,工作,,\r\n";
+        let parsed = parse_csv(with_secrets).unwrap();
+        assert_eq!(parsed[0].password.as_str(), "=keep");
+        assert_eq!(parsed[0].api_key.as_str(), "=key");
+        assert_eq!(parsed[0].api_endpoint, "https://api.x.example");
+
+        let without_secrets = "\u{feff}Title,Username,Url,ApiEndpoint,Category,Tags,Notes\r\n\
+                               T,'=user,https://api.y.example,工作,,\r\n";
+        let parsed = parse_csv(without_secrets).unwrap();
+        assert_eq!(parsed[0].username, "=user", "不含凭据的 9 列导出也要还原前缀");
+    }
+
+    /// 两个可选列各自独立判定:手工删掉其中一列的文件仍按自家处理,
+    /// 前缀必须还原(否则值会静默多出一个单引号)。这是有意的宽松。
+    #[test]
+    fn mixed_credential_headers_are_treated_as_own() {
+        let no_password = "\u{feff}Title,Username,Url,ApiKey,ApiEndpoint,Category,Tags,Notes\r\n\
+                           T,'=user,https://x.example,'=key,https://api.x.example,工作,,\r\n";
+        let parsed = parse_csv(no_password).unwrap();
+        assert_eq!(parsed[0].username, "=user");
+        assert_eq!(parsed[0].api_key.as_str(), "=key");
+
+        let no_key = "\u{feff}Title,Username,Password,Url,ApiEndpoint,Category,Tags,Notes\r\n\
+                      T,u,'=pw,https://x.example,https://api.x.example,工作,,\r\n";
+        let parsed = parse_csv(no_key).unwrap();
+        assert_eq!(parsed[0].password.as_str(), "=pw");
+    }
+
+    /// 新字段在 CSV / JSON 两侧都能按别名识别。
+    #[test]
+    fn recognizes_api_key_and_endpoint_columns() {
+        let csv = "Title,Username,Password,Url,API Key,API Endpoint,Notes\r\n\
+                   T,u,pw,https://x.example,sk-1,https://api.x.example/v1,n\r\n";
+        let parsed = parse_csv(csv).unwrap();
+        assert_eq!(parsed[0].api_key.as_str(), "sk-1");
+        assert_eq!(parsed[0].api_endpoint, "https://api.x.example/v1");
+
+        let json = r#"[{"title":"T","api_key":"sk-2","apiEndpoint":"https://api.y.example"}]"#;
+        let parsed = parse_json(json).unwrap();
+        assert_eq!(parsed[0].api_key.as_str(), "sk-2");
+        assert_eq!(parsed[0].api_endpoint, "https://api.y.example");
+    }
+
+    /// 只有 API 密钥/端点的行不算空行 —— 它们带着真实数据,不该被丢弃。
+    #[test]
+    fn entry_with_only_api_fields_is_not_blank() {
+        let entry = Entry {
+            api_key: Zeroizing::new("sk-only".into()),
+            ..Default::default()
+        };
+        assert!(!is_blank_entry(&entry));
+
+        let parsed = parse_json(r#"[{"title":"","api_key":"sk-only"}]"#).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].api_key.as_str(), "sk-only");
+    }
+
     /// `parse()` 不能先把 BOM 吃掉再交给 CSV 解析器 —— 那会把自家导出当外人,
     /// 于是 Excel 往返一次就多出一堆单引号。
     #[test]
@@ -1013,6 +1157,8 @@ mod tests {
                 username: (*value).to_string(),
                 password: Zeroizing::new((*value).to_string()),
                 url: (*value).to_string(),
+                api_key: Zeroizing::new((*value).to_string()),
+                api_endpoint: (*value).to_string(),
                 category: (*value).to_string(),
                 tags: vec![(*value).to_string()],
                 notes: (*value).to_string(),
@@ -1027,6 +1173,8 @@ mod tests {
         for (entry, value) in parsed.iter().zip(NASTY.iter()) {
             assert_eq!(&entry.username, value, "用户名往返失败:{value:?}");
             assert_eq!(entry.password.as_str(), *value, "密码往返失败:{value:?}");
+            assert_eq!(entry.api_key.as_str(), *value, "API 密钥往返失败:{value:?}");
+            assert_eq!(&entry.api_endpoint, value, "API 端点往返失败:{value:?}");
             assert_eq!(&entry.url, value, "网址往返失败:{value:?}");
             assert_eq!(&entry.category, value, "分类往返失败:{value:?}");
             assert_eq!(&entry.notes, value, "备注往返失败:{value:?}");
@@ -1061,7 +1209,8 @@ mod tests {
         };
 
         let mut document = Document::default();
-        let mut expected: Vec<(String, String, String, String, String, String)> = Vec::new();
+        let mut expected: Vec<(String, String, String, String, String, String, String, String)> =
+            Vec::new();
         for index in 0..300 {
             let title = random_field();
             let password = random_field();
@@ -1069,6 +1218,8 @@ mod tests {
             let category = random_field();
             let notes = random_field();
             let tags = random_field();
+            let api_key = random_field();
+            let api_endpoint = random_field();
             expected.push((
                 title.clone(),
                 password.clone(),
@@ -1076,6 +1227,8 @@ mod tests {
                 category.clone(),
                 notes.clone(),
                 tags.clone(),
+                api_key.clone(),
+                api_endpoint.clone(),
             ));
             document.entries.push(Entry {
                 // 用户名固定非空:否则整条全空的行会在解析时被当作空行丢掉。
@@ -1083,6 +1236,8 @@ mod tests {
                 username: format!("user-{index}"),
                 password: Zeroizing::new(password),
                 url,
+                api_key: Zeroizing::new(api_key),
+                api_endpoint,
                 category,
                 tags: vec![tags],
                 notes,
@@ -1105,6 +1260,8 @@ mod tests {
 
             assert_eq!(entry.title, want.0, "标题往返失败:{:?}", want.0);
             assert_eq!(entry.password.as_str(), want.1, "密码往返失败:{:?}", want.1);
+            assert_eq!(entry.api_key.as_str(), want.6, "API 密钥往返失败:{:?}", want.6);
+            assert_eq!(entry.api_endpoint, want.7, "API 端点往返失败:{:?}", want.7);
             assert_eq!(entry.url, want.2, "网址往返失败:{:?}", want.2);
             assert_eq!(entry.category, want.3, "分类往返失败:{:?}", want.3);
             assert_eq!(entry.notes, want.4, "备注往返失败:{:?}", want.4);
@@ -1189,6 +1346,36 @@ mod tests {
     }
 
     #[test]
+    fn json_round_trips_api_fields() {
+        let document = sample_document();
+        let text = export_json(&document, ExportOptions::default()).unwrap();
+        let parsed = parse_json(&text).unwrap();
+        let entry = parsed.iter().find(|e| e.title == "带,逗号").unwrap();
+        assert_eq!(entry.api_key.as_str(), "sk-abc");
+        assert_eq!(entry.api_endpoint, "https://api.example.com/v1");
+    }
+
+    #[test]
+    fn json_omits_api_key_when_secrets_disabled() {
+        let document = sample_document();
+        let text = export_json(
+            &document,
+            ExportOptions {
+                include_secrets: false,
+            },
+        )
+        .unwrap();
+        assert!(!text.contains("sk-abc"), "关闭明文选项后不该写出 API 密钥");
+        assert!(
+            text.contains("https://api.example.com/v1"),
+            "端点与网址同级,照常导出"
+        );
+        let parsed = parse_json(&text).unwrap();
+        let entry = parsed.iter().find(|e| e.title == "带,逗号").unwrap();
+        assert!(entry.api_key.is_empty());
+    }
+
+    #[test]
     fn json_accepts_string_and_numeric_favorite() {
         let text = r#"{"entries":[{"title":"A","favorite":"yes"},{"title":"B","favorite":0}]}"#;
         let parsed = parse_json(text).unwrap();
@@ -1213,7 +1400,7 @@ mod tests {
         let mut document = sample_document();
         document.entries[0].favorite = true;
         let text = export_csv(&document, ExportOptions::default());
-        assert!(!text.to_lowercase().contains("favorite"), "CSV 表头保持 7 列不变");
+        assert!(!text.to_lowercase().contains("favorite"), "CSV 表头固定 9 列,不含收藏");
         let parsed = parse_csv(&text).unwrap();
         assert!(parsed.iter().all(|e| !e.favorite), "CSV 不承载收藏");
     }

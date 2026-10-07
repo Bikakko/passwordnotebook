@@ -368,6 +368,33 @@ pub fn window_rect(hwnd: HWND) -> (i32, i32, i32, i32) {
     )
 }
 
+/// 窗口所在显示器的工作区(不含任务栏);取不到时返回 `None`。
+pub fn work_area(hwnd: HWND) -> Option<(i32, i32, i32, i32)> {
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+    };
+
+    unsafe {
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        if monitor.is_invalid() {
+            return None;
+        }
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+            return None;
+        }
+        Some((
+            info.rcWork.left,
+            info.rcWork.top,
+            info.rcWork.right,
+            info.rcWork.bottom,
+        ))
+    }
+}
+
 pub fn update_window(hwnd: HWND) {
     unsafe {
         let _ = UpdateWindow(hwnd);
@@ -500,22 +527,6 @@ pub fn listbox_text(hwnd: HWND, index: i32) -> String {
     let mut buf = vec![0u16; len as usize + 1];
     let n = send_msg(hwnd, LB_GETTEXT, index as usize, buf.as_mut_ptr() as isize);
     String::from_utf16_lossy(&buf[..n.max(0) as usize])
-}
-
-/// 多选列表:选中/取消选中某一项。
-pub fn listbox_set_selected(hwnd: HWND, index: i32, selected: bool) {
-    if index < 0 {
-        return;
-    }
-    send_msg(hwnd, LB_SETSEL, usize::from(selected), index as isize);
-}
-
-/// 多选列表:返回当前所有被选中项的下标。
-pub fn listbox_selected_indices(hwnd: HWND) -> Vec<i32> {
-    let count = send_msg(hwnd, LB_GETCOUNT, 0, 0) as i32;
-    (0..count)
-        .filter(|i| send_msg(hwnd, LB_GETSEL, *i as usize, 0) > 0)
-        .collect()
 }
 
 /// 按文本精确查找列表框项,找不到返回 -1。

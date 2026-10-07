@@ -57,7 +57,6 @@ pub const CBS_AUTOHSCROLL: u32 = 0x0040;
 pub const LBS_NOTIFY: u32 = 0x0001;
 pub const LBS_NOINTEGRALHEIGHT: u32 = 0x0100;
 pub const LBS_HASSTRINGS: u32 = 0x0040;
-pub const LBS_EXTENDEDSEL: u32 = 0x0800;
 
 
 // ---------- 静态文本 ----------
@@ -94,6 +93,20 @@ pub const LVM_HITTEST: u32 = LVM_FIRST + 18;
 pub const WM_TIMER: u32 = 0x0113;
 pub const WM_NOTIFY: u32 = 0x004E;
 pub const WM_KEYDOWN: u32 = 0x0100;
+pub const WM_LBUTTONDOWN: u32 = 0x0201;
+pub const WM_LBUTTONDBLCLK: u32 = 0x0203;
+pub const WM_COPY: u32 = 0x0301;
+pub const WM_VSCROLL: u32 = 0x0115;
+pub const WM_MOUSEWHEEL: u32 = 0x020A;
+pub const WM_NCDESTROY: u32 = 0x0082;
+
+/// WM_VSCROLL 的低位字(滚动条通知码)。
+pub const SB_LINEUP: usize = 0;
+pub const SB_LINEDOWN: usize = 1;
+pub const SB_PAGEUP: usize = 2;
+pub const SB_PAGEDOWN: usize = 3;
+pub const SB_THUMBPOSITION: usize = 4;
+pub const SB_THUMBTRACK: usize = 5;
 /// 回车键(WM_KEYDOWN 的 wParam)。
 pub const VK_RETURN: u32 = 0x0D;
 pub const WM_INITDIALOG: u32 = 0x0110;
@@ -124,9 +137,6 @@ pub const LB_FINDSTRINGEXACT: u32 = 0x01A2;
 pub const LB_RESETCONTENT: u32 = 0x0184;
 pub const LB_SETCURSEL: u32 = 0x0186;
 pub const LB_GETCURSEL: u32 = 0x0188;
-pub const LB_SETSEL: u32 = 0x0185;
-pub const LB_GETSEL: u32 = 0x0187;
-pub const LB_GETCOUNT: u32 = 0x018B;
 pub const LB_GETTEXTLEN: u32 = 0x018A;
 pub const LB_GETTEXT: u32 = 0x0189;
 /// 列表框的横向滚动范围(配合 WS_HSCROLL)。
@@ -204,6 +214,7 @@ pub const HDN_ENDTRACKW: i32 = -327;
 
 // ---------- 通知码 ----------
 pub const BN_CLICKED: u16 = 0;
+pub const BN_SETFOCUS: u16 = 6;
 pub const EN_CHANGE: u16 = 0x0300;
 pub const LBN_SELCHANGE: u16 = 1;
 pub const CBN_SELCHANGE: u16 = 1;

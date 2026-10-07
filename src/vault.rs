@@ -536,6 +536,8 @@ impl VaultService {
         target.username = entry.username;
         target.password = entry.password;
         target.url = entry.url;
+        target.api_key = entry.api_key;
+        target.api_endpoint = entry.api_endpoint;
         target.notes = entry.notes;
         target.category = entry.category;
         target.tags = entry.tags;
@@ -597,8 +599,8 @@ impl VaultService {
     /// 批量导入条目(单次落盘,不存在「导一半」的中间状态)。
     ///
     /// 去重按「标题 + 用户名」(忽略大小写与首尾空白);两者都为空时退化为网址。
-    /// 覆盖策略下,导入项的密码为空表示**保留原密码** —— 一份不含密码的导出文件
-    /// 不应该把库里已有的密码清掉。收藏状态同理:只置上,不清除。
+    /// 覆盖策略下,导入项的密码或 API 密钥为空表示**保留原值** —— 一份不含凭据的
+    /// 导出文件不应该把库里已有的凭据清掉。收藏状态同理:只置上,不清除。
     ///
     /// 无论文件里写的是什么 id,导入时一律分配新 id:否则来自同一个库的备份
     /// 会与库内条目撞 id,后续的编辑与彻底删除都会作用到错误的对象上。
@@ -661,6 +663,11 @@ impl VaultService {
                             target.password = entry.password;
                         }
                         target.url = entry.url;
+                        if !entry.api_key.is_empty() {
+                            target.api_key = entry.api_key;
+                        }
+                        // 端点与网址同级:无条件覆盖(空值也覆盖)。
+                        target.api_endpoint = entry.api_endpoint;
                         target.category = entry.category;
                         target.tags = entry.tags;
                         // 收藏同理:CSV 没有收藏列,旧版 JSON 也没有这个字段,

@@ -2,8 +2,8 @@
 //!
 //! 两条通道的定位不同,界面上也刻意分开:
 //!
-//! - **导出**:默认包含明文密码,但必须由用户显式勾选确认;不勾选密码时导出的是一份
-//!   「只有账号信息」的清单,可以放心贴在工单或共享文档里。
+//! - **导出**:默认包含明文密码与 API 密钥,但必须由用户显式勾选确认;不勾选时
+//!   导出的是一份「不含凭据」的清单,可以放心贴在工单或共享文档里。
 //! - **导入**:先解析、再让用户确认、然后自动备份库文件,最后才写库。
 
 use std::path::Path;
@@ -23,7 +23,7 @@ const ID_HINT: usize = 1;
 const ID_EXPORT_GROUP: usize = 10;
 const ID_EXPORT_FORMAT_LABEL: usize = 11;
 const ID_EXPORT_FORMAT: usize = 12;
-const ID_EXPORT_PASSWORDS: usize = 13;
+const ID_EXPORT_SECRETS: usize = 13;
 const ID_EXPORT_ACK: usize = 14;
 const ID_EXPORT_BTN: usize = 15;
 const ID_EXPORT_NOTE: usize = 16;
@@ -45,7 +45,7 @@ const CONTROL_IDS: [usize; 17] = [
     ID_EXPORT_GROUP,
     ID_EXPORT_FORMAT_LABEL,
     ID_EXPORT_FORMAT,
-    ID_EXPORT_PASSWORDS,
+    ID_EXPORT_SECRETS,
     ID_EXPORT_ACK,
     ID_EXPORT_BTN,
     ID_EXPORT_NOTE,
@@ -62,7 +62,7 @@ const CONTROL_IDS: [usize; 17] = [
 
 struct TransferState {
     format: HWND,
-    passwords: HWND,
+    secrets: HWND,
     ack: HWND,
     strategy: HWND,
     status: HWND,
@@ -74,7 +74,7 @@ struct TransferState {
 pub fn show(owner: HWND) -> bool {
     let state = Box::new(TransferState {
         format: HWND::default(),
-        passwords: HWND::default(),
+        secrets: HWND::default(),
         ack: HWND::default(),
         strategy: HWND::default(),
         status: HWND::default(),
@@ -139,13 +139,13 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     ctl("BUTTON", "导出", BS_GROUPBOX, 0, hwnd, ID_EXPORT_GROUP, (20, 62, 300, 320));
     ctl("STATIC", "文件格式", SS_LEFT, 0, hwnd, ID_EXPORT_FORMAT_LABEL, (36, 88, 80, 22));
     s.format = combo(hwnd, ID_EXPORT_FORMAT, (120, 84, 184, 200));
-    s.passwords = ctl(
+    s.secrets = ctl(
         "BUTTON",
-        "包含明文密码",
+        "包含明文密码与 API 密钥",
         WS_TABSTOP | BS_AUTOCHECKBOX,
         0,
         hwnd,
-        ID_EXPORT_PASSWORDS,
+        ID_EXPORT_SECRETS,
         (36, 126, 260, 24),
     );
     s.ack = ctl(
@@ -183,7 +183,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     s.strategy = combo(hwnd, ID_IMPORT_STRATEGY, (356, 112, 268, 200));
     ctl(
         "STATIC",
-        "按「标题 + 用户名」判断重复（忽略大小写）。\r\n覆盖时，文件里没有密码的条目保留原密码。",
+        "按「标题 + 用户名」判断重复（忽略大小写）。\r\n覆盖时，空白的密码与 API 密钥会保留原值。",
         SS_LEFT,
         0,
         hwnd,
@@ -213,7 +213,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     ui::combo_add(s.strategy, DuplicateStrategy::Append.label());
     ui::combo_set_index(s.strategy, 0);
 
-    ui::set_checked(s.passwords, true);
+    ui::set_checked(s.secrets, true);
 
     ui::apply_font_to(hwnd, &CONTROL_IDS, app::state().font);
     ui::apply_font_to(hwnd, &[ID_EXPORT_GROUP, ID_IMPORT_GROUP], app::state().font_bold);
@@ -225,10 +225,10 @@ fn on_command(hwnd: HWND, id: usize, code: u16) {
     }
 
     match id {
-        // 不导出密码时,那句确认就没有对象:一并禁用并清掉勾选,
-        // 免得「先勾确认、再取消密码」留下一个无意义的已确认状态。
-        ID_EXPORT_PASSWORDS => {
-            let include = ui::is_checked(st(hwnd).passwords);
+        // 不导出凭据时,那句确认就没有对象:一并禁用并清掉勾选,
+        // 免得「先勾确认、再取消凭据」留下一个无意义的已确认状态。
+        ID_EXPORT_SECRETS => {
+            let include = ui::is_checked(st(hwnd).secrets);
             ui::enable(st(hwnd).ack, include);
             if !include {
                 ui::set_checked(st(hwnd).ack, false);
@@ -248,9 +248,9 @@ fn export_to_file(hwnd: HWND) {
     } else {
         Format::Csv
     };
-    let include_passwords = ui::is_checked(st(hwnd).passwords);
+    let include_secrets = ui::is_checked(st(hwnd).secrets);
 
-    if include_passwords && !ui::is_checked(st(hwnd).ack) {
+    if include_secrets && !ui::is_checked(st(hwnd).ack) {
         ui::set_text(
             st(hwnd).status,
             "请先勾选「我明白导出文件是明文，会妥善保管」。",
@@ -279,7 +279,7 @@ fn export_to_file(hwnd: HWND) {
     };
 
     // `pick_file` 会弹出系统模态对话框:之后再取状态,不要跨过它复用旧引用。
-    let options = ExportOptions { include_passwords };
+    let options = ExportOptions { include_secrets };
     let result = match app::state().vault.document() {
         Some(document) => export_import::export_to_path(document, Path::new(&path), format, options),
         None => {
@@ -291,10 +291,10 @@ fn export_to_file(hwnd: HWND) {
     match result {
         Ok(count) => {
             ui::set_text(st(hwnd).status, &format!("已导出 {count} 个条目到 {path}。"));
-            let note = if include_passwords {
-                "文件里的密码是明文，请尽快转移到安全位置并删除原文件。"
+            let note = if include_secrets {
+                "文件里的密码与 API 密钥是明文，请尽快转移到安全位置并删除原文件。"
             } else {
-                "文件里不含密码。"
+                "文件里不含密码与 API 密钥。"
             };
             ui::info(hwnd, &format!("已导出 {count} 个条目。\n\n{note}"), "导出完成");
         }

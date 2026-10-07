@@ -141,6 +141,32 @@ fn update_and_delete_flow() {
     assert_eq!(vault.deleted_count(), 0);
 }
 
+/// 编辑器保存走 `update_entry`:它逐字段拷贝,漏一个字段就会出现
+/// 「界面上保存成功、重开后少了两项」。
+#[test]
+fn update_entry_keeps_api_fields() {
+    let tv = TempVault::new("update-api");
+    tv.create(PASSWORD);
+
+    let mut vault = VaultService::new();
+    vault.open(&tv.path, PASSWORD).unwrap();
+    let mut original = entry("服务", "开发", &[]);
+    original.api_key = zeroize::Zeroizing::new("sk-old".into());
+    original.api_endpoint = "https://api.old.example".into();
+    vault.add_entry(original).unwrap();
+
+    let mut target = vault.active_entries().next().unwrap().clone();
+    target.api_key = zeroize::Zeroizing::new("sk-new".into());
+    target.api_endpoint = "https://api.new.example/v1".into();
+    vault.update_entry(target).unwrap();
+
+    let mut reopened = VaultService::new();
+    reopened.open(&tv.path, PASSWORD).unwrap();
+    let stored = reopened.active_entries().next().unwrap();
+    assert_eq!(stored.api_key.as_str(), "sk-new");
+    assert_eq!(stored.api_endpoint, "https://api.new.example/v1");
+}
+
 #[test]
 fn empty_bin_keeps_active_entries() {
     let tv = TempVault::new("emptybin");

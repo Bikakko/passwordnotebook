@@ -22,8 +22,8 @@ use super::tokens::*;
 use super::ui;
 use super::ui::{scale, unscale};
 use super::{
-    clipboard, dialog, dlg_editor, dlg_generator, dlg_input, dlg_recovery, dlg_settings, dlg_taxonomy,
-    dlg_transfer, dpapi, hello, idle,
+    clipboard, dialog, dlg_detail, dlg_editor, dlg_generator, dlg_input, dlg_recovery, dlg_settings,
+    dlg_taxonomy, dlg_transfer, dpapi, hello, idle,
 };
 
 /// 列表列定义:(列标题, 96 DPI 基准逻辑像素宽度, 默认百分比分配)
@@ -1157,7 +1157,10 @@ pub fn on_command(hwnd: HWND, id: usize, code: u16) {
         // --- 列表 ---
         ID_NEW_BTN if code == BN_CLICKED => new_entry(hwnd),
         ID_SEARCH if code == EN_CHANGE => refresh_list(hwnd),
-        ID_FAV_ONLY_BTN if code == BN_CLICKED => refresh_list(hwnd),
+        ID_FAV_ONLY_BTN if code == BN_CLICKED => {
+            save_favorites_only(hwnd);
+            refresh_list(hwnd);
+        }
         ID_TAG_LIST if code == LBN_SELCHANGE => refresh_list(hwnd),
         ID_SORT_COMBO if code == CBN_SELCHANGE => refresh_list(hwnd),
         ID_GEN_BTN if code == BN_CLICKED => {
@@ -1315,7 +1318,7 @@ pub fn on_notify(hwnd: HWND, lparam: LPARAM) -> isize {
     }
 
     if list == header.hwndFrom && code == NM_DBLCLK {
-        edit_selected(hwnd);
+        show_detail_from_double_click(hwnd);
         return 0;
     }
 
@@ -1356,6 +1359,20 @@ pub fn on_column_resized(hwnd: HWND) {
     }
 }
 
+/// 「只看收藏」的勾选状态跟着库走:写进设置并落盘,下次打开保持原样。
+fn save_favorites_only(hwnd: HWND) {
+    let checked = ui::is_checked(st(hwnd).fav_only_btn);
+    if app::state().settings.favorites_only == checked {
+        return;
+    }
+    app::state().settings.favorites_only = checked;
+    let settings = app::state().settings.clone();
+    if let Err(e) = app::state().vault.update_settings(settings) {
+        // 勾选状态已改在内存里,状态栏的未落盘警告会如实提示。
+        report_save_failed(hwnd, &e);
+    }
+}
+
 // ---------- 自绘标签页 ----------
 
 /// 标签条通知:用户点了另一个分类标签,重新筛选列表。
@@ -1374,6 +1391,9 @@ const CMD_DELETE: usize = 3006;
 const CMD_FAVORITE: usize = 3007;
 /// 用系统默认浏览器打开选中条目的网址。
 const CMD_OPEN_BROWSER: usize = 3008;
+/// 3010 起被分类页签菜单占用,这两个复制命令从 3020 起取空位。
+const CMD_COPY_KEY: usize = 3020;
+const CMD_COPY_ENDPOINT: usize = 3021;
 
 /// 主列表的右键菜单:复制类操作放最上面。
 pub fn on_context_menu(hwnd: HWND) -> bool {
@@ -1424,18 +1444,21 @@ pub fn on_context_menu(hwnd: HWND) -> bool {
         // 条目上:先选中它,菜单里不再出现「新建」。
         ui::listview_select(list, index);
 
-        let (has_password, has_username, has_url, is_favorite) = selected_entry_id(hwnd)
-            .and_then(|id| {
-                with_entry(hwnd, &id, |e| {
-                    (
-                        !e.password.is_empty(),
-                        !e.username.is_empty(),
-                        !e.url.trim().is_empty(),
-                        e.favorite,
-                    )
+        let (has_password, has_username, has_url, has_api_key, has_api_endpoint, is_favorite) =
+            selected_entry_id(hwnd)
+                .and_then(|id| {
+                    with_entry(hwnd, &id, |e| {
+                        (
+                            !e.password.is_empty(),
+                            !e.username.trim().is_empty(),
+                            !e.url.trim().is_empty(),
+                            !e.api_key.is_empty(),
+                            !e.api_endpoint.trim().is_empty(),
+                            e.favorite,
+                        )
+                    })
                 })
-            })
-            .unwrap_or((false, false, false, false));
+                .unwrap_or((false, false, false, false, false, false));
 
         // 没有内容的复制项灰显,点不动。打开网址只按「有没有填」来灰显:
         // 填了但不是 http(s) 的话,点了会给出具体原因,而不是灰着不给解释。
@@ -1443,6 +1466,8 @@ pub fn on_context_menu(hwnd: HWND) -> bool {
         menu.add_item(CMD_COPY_USER, "复制用户名", has_username);
         menu.add_item(CMD_OPEN_BROWSER, "打开网址", has_url);
         menu.add_item(CMD_OPEN_URL, "复制网址", has_url);
+        menu.add_item(CMD_COPY_KEY, "复制 API 密钥", has_api_key);
+        menu.add_item(CMD_COPY_ENDPOINT, "复制 API 端点", has_api_endpoint);
         menu.add_separator();
         menu.add(
             CMD_FAVORITE,
@@ -1482,6 +1507,8 @@ pub fn on_context_menu(hwnd: HWND) -> bool {
     match menu.track(hwnd) {
         Some(CMD_COPY_PW) => copy_password(hwnd),
         Some(CMD_COPY_USER) => copy_username(hwnd),
+        Some(CMD_COPY_KEY) => copy_api_key(hwnd),
+        Some(CMD_COPY_ENDPOINT) => copy_api_endpoint(hwnd),
         Some(CMD_OPEN_URL) => copy_selected_url(hwnd),
         Some(CMD_OPEN_BROWSER) => open_selected_url(hwnd),
         Some(CMD_FAVORITE) => toggle_favorite_selected(hwnd),
@@ -1890,6 +1917,8 @@ fn after_unlock(hwnd: HWND) {
     ui::set_text(s.unlock_btn, "解锁");
     ui::set_password_char(s.unlock_pw, Some('\u{25CF}'));
     ui::set_checked(s.unlock_show, false);
+    // 「只看收藏」的上次状态跟着库走;下面的 refresh_list 会按它筛选。
+    ui::set_checked(s.fav_only_btn, settings.favorites_only);
 
     refresh_filters(hwnd);
     refresh_list(hwnd);
@@ -2105,6 +2134,53 @@ fn toggle_favorite_selected(hwnd: HWND) {
     }
 }
 
+/// 双击条目 → 打开「条目详情」。只有双击确实命中某一行才响应,空白区不动。
+fn show_detail_from_double_click(hwnd: HWND) {
+    if ui::listview_item_at(st(hwnd).list, ui::cursor_pos()) < 0 {
+        return;
+    }
+    show_detail(hwnd);
+}
+
+/// 打开选中条目的只读详情(双击条目触发)。
+fn show_detail(hwnd: HWND) {
+    let Some(id) = selected_entry_id(hwnd) else {
+        return;
+    };
+    let Some(entry) = with_entry(hwnd, &id, |e| e.clone()) else {
+        return;
+    };
+    if dlg_detail::show(hwnd, &entry) {
+        refresh_filters(hwnd);
+        refresh_list(hwnd);
+    }
+}
+
+/// 复制文本到剪贴板,返回给用户看的提示文案。
+///
+/// `sensitive` 为真(密码、API 密钥)时按设置安排「N 秒后自动清空」:
+/// 截止时间与计时器都挂在主窗口上 —— 模态对话框运行期间主窗口的 WM_TIMER
+/// 照常派发,所以详情弹窗里的复制也走这同一条逻辑。
+///
+/// 文案由调用方决定显示在哪里:主界面进状态栏,详情弹窗进自己的状态行。
+pub(crate) fn copy_text(main: HWND, text: Zeroizing<String>, what: &str, sensitive: bool) -> String {
+    clipboard::set_text(&text);
+
+    let seconds = app::state().settings.clipboard_clear_seconds;
+    if !sensitive || seconds == 0 {
+        if sensitive {
+            // 设置里关掉了自动清空:把上一笔还没到期的清空一并取消。
+            st(main).clipboard_deadline = None;
+        }
+        return format!("已复制{what}");
+    }
+
+    st(main).clipboard_deadline =
+        Some((Instant::now() + Duration::from_secs(seconds as u64), text));
+    ui::set_timer(main, TIMER_CLIPBOARD, 1000);
+    format!("已复制{what}，{seconds} 秒后清空剪贴板")
+}
+
 fn copy_password(hwnd: HWND) {
     let Some(id) = selected_entry_id(hwnd) else {
         return;
@@ -2117,22 +2193,7 @@ fn copy_password(hwnd: HWND) {
         return;
     }
 
-    let seconds = app::state().settings.clipboard_clear_seconds;
-    clipboard::set_text(&password);
-
-    // 先把剪贴板截止时间写好并结束借用,再写状态栏 —— flash_status 内部会再
-    // 调一次 st(hwnd),不能与上面的 &mut 同时活着。
-    let message = if seconds > 0 {
-        st(hwnd).clipboard_deadline = Some((
-            Instant::now() + Duration::from_secs(seconds as u64),
-            password,
-        ));
-        ui::set_timer(hwnd, TIMER_CLIPBOARD, 1000);
-        format!("已复制密码，{seconds} 秒后清空剪贴板")
-    } else {
-        st(hwnd).clipboard_deadline = None;
-        "已复制密码".to_string()
-    };
+    let message = copy_text(hwnd, password, "密码", true);
     flash_status(hwnd, &message);
 }
 
@@ -2143,18 +2204,54 @@ fn copy_username(hwnd: HWND) {
     let Some(username) = with_entry(hwnd, &id, |e| e.username.clone()) else {
         return;
     };
-    if username.is_empty() {
+    if username.trim().is_empty() {
         ui::info(hwnd, "这个条目没有填写用户名。", "提示");
         return;
     }
-    clipboard::set_text(&username);
-    flash_status(hwnd, "已复制用户名");
+
+    let message = copy_text(hwnd, Zeroizing::new(username), "用户名", false);
+    flash_status(hwnd, &message);
+}
+
+fn copy_api_key(hwnd: HWND) {
+    let Some(id) = selected_entry_id(hwnd) else {
+        return;
+    };
+    let Some(key) = with_entry(hwnd, &id, |e| e.api_key.clone()) else {
+        return;
+    };
+    if key.is_empty() {
+        ui::info(hwnd, "这个条目没有填写 API 密钥。", "提示");
+        return;
+    }
+
+    let message = copy_text(hwnd, key, "API 密钥", true);
+    flash_status(hwnd, &message);
+}
+
+/// 复制 API 端点。与网址同一待遇:去掉首尾空白,不自动清空。
+fn copy_api_endpoint(hwnd: HWND) {
+    let Some(id) = selected_entry_id(hwnd) else {
+        return;
+    };
+    let Some(endpoint) = with_entry(hwnd, &id, |e| e.api_endpoint.clone()) else {
+        return;
+    };
+
+    let endpoint = endpoint.trim().to_string();
+    if endpoint.is_empty() {
+        ui::info(hwnd, "这个条目没有填写 API 端点。", "提示");
+        return;
+    }
+
+    let message = copy_text(hwnd, Zeroizing::new(endpoint), "API 端点", false);
+    flash_status(hwnd, &message);
 }
 
 /// 复制网址。
 ///
-/// 这里存的往往是 API 服务商的端点地址(base url),而「密码」字段里装的常常是
-/// api key —— 所以直接复制比打开浏览器实用得多。
+/// 与「打开网址」并列:多数时候用户要的是把地址粘到别处(配置、工单),
+/// 而不是现在就跳浏览器 —— API 服务地址请填「API 端点」,它同样可复制。
 fn copy_selected_url(hwnd: HWND) {
     let Some(id) = selected_entry_id(hwnd) else {
         return;
@@ -2169,8 +2266,8 @@ fn copy_selected_url(hwnd: HWND) {
         return;
     }
 
-    clipboard::set_text(&url);
-    flash_status(hwnd, "已复制网址");
+    let message = copy_text(hwnd, Zeroizing::new(url), "网址", false);
+    flash_status(hwnd, &message);
 }
 
 /// 用系统默认浏览器打开选中条目的网址。

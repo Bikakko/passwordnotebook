@@ -454,6 +454,7 @@ fn core_checks() -> usize {
         let mut settings = crate::model::Settings::default();
         settings.clipboard_clear_seconds = 42;
         settings.idle_lock_minutes = 7;
+        settings.favorites_only = true;
         settings.column_widths = vec![147, 113, 170, 80, 160, 150];
         check!("设置写入库内", unlocked.update_settings(settings).is_ok());
 
@@ -493,15 +494,17 @@ fn core_checks() -> usize {
             (
                 d.settings.clipboard_clear_seconds,
                 d.settings.idle_lock_minutes,
+                d.settings.favorites_only,
                 d.settings.column_widths.clone(),
             )
         });
         check!(
-            "设置随库持久化(42 / 7 分钟 / 列宽)",
+            "设置随库持久化(42 / 7 分钟 / 列宽 / 只看收藏)",
             ok && persisted
                 == Some((
                     42,
                     7,
+                    true,
                     vec![147, 113, 170, 80, 160, 150]
                 ))
         );
@@ -541,6 +544,8 @@ fn core_checks() -> usize {
                 title: "导出用,含逗号".into(),
                 username: "user".into(),
                 password: zeroize::Zeroizing::new("p,w\"d".to_string()),
+                api_key: zeroize::Zeroizing::new("sk-自检".to_string()),
+                api_endpoint: "https://api.selftest.example".into(),
                 notes: "第一行\n第二行".into(),
                 category: "自检".into(),
                 tags: vec!["标签A".into()],
@@ -559,7 +564,9 @@ fn core_checks() -> usize {
             let csv_ok = matches!(&csv_read, Ok(entries)
                 if entries.len() == 1
                     && entries[0].title == "导出用,含逗号"
-                    && entries[0].password.as_str() == "p,w\"d");
+                    && entries[0].password.as_str() == "p,w\"d"
+                    && entries[0].api_key.as_str() == "sk-自检"
+                    && entries[0].api_endpoint == "https://api.selftest.example");
             let csv_check_ok = csv_export.as_ref().is_some_and(|r| r.is_ok())
                 && json_export.as_ref().is_some_and(|r| r.is_ok())
                 && csv_ok;
@@ -629,6 +636,30 @@ fn core_checks() -> usize {
                     .map(|v| v.len() == 1 && v[0].title == "示例" && v[0].url == "https://e.example")
                     .unwrap_or(false)
         );
+
+        // 0.2.x 导出的 7 列表头(带 BOM)必须继续被认出来,否则升级后第一次
+        // 导入自家旧文件,公式防护前缀就不再还原(值凭空多一个单引号)。
+        let legacy_path = dir.join("selftest-legacy.csv");
+        let legacy_written = std::fs::write(
+            &legacy_path,
+            "\u{feff}Title,Username,Password,Url,Category,Tags,Notes\r\nT,u,'=keep,https://x.example,,,\r\n",
+        )
+        .is_ok();
+        let legacy_read = export_import::import_from_path(&legacy_path);
+        let legacy_ok = legacy_written
+            && matches!(&legacy_read, Ok(v) if v.len() == 1 && v[0].password.as_str() == "=keep");
+        if !legacy_ok {
+            println!("        诊断:旧表头文件存在={}", legacy_path.exists());
+            match &legacy_read {
+                Ok(v) => println!(
+                    "        诊断:解析出 {} 条,首条密码前缀还原={:?}",
+                    v.len(),
+                    v.first().map(|e| e.password.as_str())
+                ),
+                Err(e) => println!("        诊断:解析失败:{e}"),
+            }
+        }
+        check!("旧版 7 列 CSV 仍被识别为自家导出", legacy_ok);
 
         // 中文 Windows 上 Excel 默认另存为 GBK,必须明确报错而不是导入乱码。
         let gbk_written = std::fs::write(&gbk_path, [0xB1, 0xED, 0xCC, 0xE2, 0x0A]).is_ok();

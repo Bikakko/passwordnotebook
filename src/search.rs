@@ -47,7 +47,10 @@ pub fn match_score(entry: &Entry, query: &str) -> i32 {
         60
     } else if entry.username.to_lowercase().contains(query) {
         40
-    } else if entry.url.to_lowercase().contains(query) {
+    } else if entry.url.to_lowercase().contains(query)
+        || entry.api_endpoint.to_lowercase().contains(query)
+    {
+        // 网址与 API 端点同级:两者都是「服务地址」,命中记同样的分。
         30
     } else if entry.tags.iter().any(|t| hit(t)) {
         20
@@ -105,7 +108,7 @@ impl ListFilter<'_> {
 /// 临时的搜索压下去。
 ///
 /// 评分**每条只算一次**再排序,而不是在比较函数里现算:`match_score` 每次调用
-/// 都要把标题/账号/网址/标签/分类/备注各 `to_lowercase()` 一遍(最多 6 次分配),
+/// 都要把标题/账号/网址/端点/标签/分类/备注各 `to_lowercase()` 一遍(最多 7 次分配),
 /// 而比较次数是 O(n log n) —— 直接在闭包里算等于把同样的字符串转换重复几十遍。
 /// 「装饰-排序-写回」也保持了对相等元素的稳定顺序,与原先 `sort_by` 的结果一致。
 pub fn sort_entries(entries: &mut [&Entry], mode: SortMode, query: &str) {
@@ -184,6 +187,35 @@ mod tests {
         assert!(match_score(&username, "needle") > match_score(&tag, "needle"));
         assert!(match_score(&tag, "needle") > match_score(&notes, "needle"));
         assert!(match_score(&notes, "needle") > 0);
+    }
+
+    #[test]
+    fn api_endpoint_ranks_like_url_and_api_key_is_not_searched() {
+        let by_url = Entry {
+            title: "t".into(),
+            url: "https://needle.example".into(),
+            ..Default::default()
+        };
+        let by_endpoint = Entry {
+            title: "t".into(),
+            api_endpoint: "https://needle.example/v1".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            match_score(&by_url, "needle"),
+            match_score(&by_endpoint, "needle"),
+            "端点与网址同级"
+        );
+        assert_eq!(match_score(&by_endpoint, "needle"), 30);
+
+        // 密钥与密码一样不参与搜索。
+        let by_key = Entry {
+            title: "t".into(),
+            api_key: zeroize::Zeroizing::new("sk-needle".into()),
+            ..Default::default()
+        };
+        assert_eq!(match_score(&by_key, "needle"), 0);
+        assert!(!matches(&by_key, "needle"));
     }
 
     #[test]

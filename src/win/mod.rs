@@ -17,6 +17,7 @@ pub mod tokens;
 pub mod ui;
 
 mod dialog;
+mod dlg_detail;
 mod dlg_editor;
 mod dlg_generator;
 mod dlg_input;
