@@ -110,7 +110,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             LRESULT(0)
         }
         WM_COMMAND => {
-            on_command(hwnd, (wparam.0 & 0xFFFF) as usize, ((wparam.0 >> 16) & 0xFFFF) as u16);
+            let (id, code) = dialog::command_params(wparam);
+            on_command(hwnd, id, code);
             LRESULT(0)
         }
         WM_CLOSE => {
@@ -122,8 +123,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 }
 
 fn on_create(hwnd: HWND, lparam: LPARAM) {
-    let ptr = unsafe { ui::create_param(lparam) } as *mut SettingsState;
-    ui::set_user_data(hwnd, ptr as *mut std::ffi::c_void);
+    unsafe { ui::attach_state::<SettingsState>(hwnd, lparam) };
     let s = st(hwnd);
     let settings = app::state().settings.clone();
 
@@ -160,41 +160,17 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     label(hwnd, "自动锁定", ID_SECTION_2, (MARGIN, 162, 200, SECTION_TITLE_H));
     label(hwnd, "空闲多久后自动锁定密码本", ID_IDLE_LABEL, (MARGIN, 188, 300, LABEL_H));
     s.idle = ctl("COMBOBOX", "", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, 0, hwnd, ID_IDLE, (MARGIN, 210, 520, COMBO_DROP_H));
-    for text in IDLE_LABELS {
-        ui::combo_add(s.idle, text);
-    }
-    ui::combo_set_index(
-        s.idle,
-        IDLE_VALUES.iter().position(|v| *v == settings.idle_lock_minutes).unwrap_or(0) as i32,
-    );
+    fill_combo(s.idle, &IDLE_LABELS, &IDLE_VALUES, settings.idle_lock_minutes, 0);
 
     label(hwnd, "剪贴板", ID_SECTION_3, (MARGIN, 240, 200, SECTION_TITLE_H));
     label(hwnd, "复制密码后自动清空剪贴板", ID_CLIP_LABEL, (MARGIN, 266, 300, LABEL_H));
     s.clipboard = ctl("COMBOBOX", "", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, 0, hwnd, ID_CLIP, (MARGIN, 288, 520, COMBO_DROP_H));
-    for text in CLIP_LABELS {
-        ui::combo_add(s.clipboard, text);
-    }
-    ui::combo_set_index(
-        s.clipboard,
-        CLIP_VALUES
-            .iter()
-            .position(|v| *v == settings.clipboard_clear_seconds)
-            .unwrap_or(2) as i32,
-    );
+    fill_combo(s.clipboard, &CLIP_LABELS, &CLIP_VALUES, settings.clipboard_clear_seconds, 2);
 
     label(hwnd, "回收站", ID_SECTION_4, (MARGIN, 318, 200, SECTION_TITLE_H));
     label(hwnd, "回收站条目保留时长（超期后下次解锁时彻底删除）", ID_BIN_LABEL, (MARGIN, 344, 520, LABEL_H));
     s.bin = ctl("COMBOBOX", "", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, 0, hwnd, ID_BIN, (MARGIN, 366, 520, COMBO_DROP_H));
-    for text in BIN_LABELS {
-        ui::combo_add(s.bin, text);
-    }
-    ui::combo_set_index(
-        s.bin,
-        BIN_VALUES
-            .iter()
-            .position(|v| *v == settings.bin_retention_days)
-            .unwrap_or(2) as i32,
-    );
+    fill_combo(s.bin, &BIN_LABELS, &BIN_VALUES, settings.bin_retention_days, 2);
 
     label(hwnd, "登录密码与恢复码", ID_SECTION_5, (MARGIN, 396, 200, SECTION_TITLE_H));
     label(hwnd, "当前登录密码", ID_CUR_PW_LABEL, (MARGIN, 422, 200, LABEL_H));
@@ -288,6 +264,21 @@ fn on_quick_changed(hwnd: HWND) {
     }
 }
 
+/// 填充下拉框并按值选中(表里找不到当前值时退回 `fallback` 下标)。
+fn fill_combo<T: PartialEq + Copy>(
+    combo: HWND,
+    labels: &[&str],
+    values: &[T],
+    current: T,
+    fallback: usize,
+) {
+    for text in labels {
+        ui::combo_add(combo, text);
+    }
+    let index = values.iter().position(|v| *v == current).unwrap_or(fallback);
+    ui::combo_set_index(combo, index as i32);
+}
+
 fn save(hwnd: HWND) {
     let s = st(hwnd);
     let idle_index = ui::combo_index(s.idle).max(0) as usize;
@@ -300,7 +291,6 @@ fn save(hwnd: HWND) {
         idle_lock_minutes: IDLE_VALUES.get(idle_index).copied().unwrap_or(0),
         clipboard_clear_seconds: CLIP_VALUES.get(clip_index).copied().unwrap_or(20),
         bin_retention_days: BIN_VALUES.get(bin_index).copied().unwrap_or(30),
-        always_on_top: app::state().settings.always_on_top,
         favorites_only: app::state().settings.favorites_only,
         column_widths: app::state().settings.column_widths.clone(),
     };
@@ -320,10 +310,10 @@ fn save(hwnd: HWND) {
     // 让用户看到原因,自己决定是留着还是关掉这个开关。
     let mut cache_error = None;
     if updated.quick_unlock_enabled {
-        if let Some((id, generation, dek)) = app::state().vault.quick_unlock_material() {
-            if let Err(e) = dpapi::store(id, generation, &dek, updated.require_windows_hello) {
-                cache_error = Some(e);
-            }
+        if let Some((id, generation, dek)) = app::state().vault.quick_unlock_material()
+            && let Err(e) = dpapi::store(id, generation, &dek, updated.require_windows_hello)
+        {
+            cache_error = Some(e);
         }
     } else {
         dpapi::clear();
@@ -360,12 +350,8 @@ fn change_password(hwnd: HWND) {
         ui::set_text(s.error, "请输入当前登录密码。");
         return;
     }
-    if new.chars().count() < 6 {
-        ui::set_text(s.error, "新的登录密码太短，请至少使用 6 位字符。");
-        return;
-    }
-    if new != confirm {
-        ui::set_text(s.error, "两次输入的新登录密码不一致。");
+    if let Err(message) = super::main_ui::validate_new_password("新的登录密码", &new, &confirm) {
+        ui::set_text(s.error, &message);
         return;
     }
 

@@ -96,7 +96,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             LRESULT(0)
         }
         WM_COMMAND => {
-            on_command(hwnd, (wparam.0 & 0xFFFF) as usize, ((wparam.0 >> 16) & 0xFFFF) as u16);
+            let (id, code) = dialog::command_params(wparam);
+            on_command(hwnd, id, code);
             LRESULT(0)
         }
         WM_CLOSE => {
@@ -121,8 +122,7 @@ fn combo(parent: HWND, id: usize, r: (i32, i32, i32, i32)) -> HWND {
 }
 
 fn on_create(hwnd: HWND, lparam: LPARAM) {
-    let ptr = unsafe { ui::create_param(lparam) } as *mut TransferState;
-    ui::set_user_data(hwnd, ptr as *mut std::ffi::c_void);
+    unsafe { ui::attach_state::<TransferState>(hwnd, lparam) };
     let s = st(hwnd);
 
     ctl(
@@ -204,13 +204,14 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     s.status = ctl("STATIC", "", SS_LEFT, 0, hwnd, ID_STATUS, (20, 388, 620, 44));
     ctl("BUTTON", "关闭", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, hwnd, ID_CLOSE, (540, 440, 120, 36));
 
-    ui::combo_add(s.format, Format::Csv.label());
-    ui::combo_add(s.format, Format::Json.label());
+    for format in Format::ALL {
+        ui::combo_add(s.format, format.label());
+    }
     ui::combo_set_index(s.format, 0);
 
-    ui::combo_add(s.strategy, DuplicateStrategy::Skip.label());
-    ui::combo_add(s.strategy, DuplicateStrategy::Overwrite.label());
-    ui::combo_add(s.strategy, DuplicateStrategy::Append.label());
+    for strategy in DuplicateStrategy::ALL {
+        ui::combo_add(s.strategy, strategy.label());
+    }
     ui::combo_set_index(s.strategy, 0);
 
     ui::set_checked(s.secrets, true);
@@ -243,11 +244,7 @@ fn on_command(hwnd: HWND, id: usize, code: u16) {
 }
 
 fn export_to_file(hwnd: HWND) {
-    let format = if ui::combo_index(st(hwnd).format) == 1 {
-        Format::Json
-    } else {
-        Format::Csv
-    };
+    let format = Format::from_combo(ui::combo_index(st(hwnd).format));
     let include_secrets = ui::is_checked(st(hwnd).secrets);
 
     if include_secrets && !ui::is_checked(st(hwnd).ack) {
@@ -305,14 +302,6 @@ fn export_to_file(hwnd: HWND) {
     }
 }
 
-fn selected_strategy(hwnd: HWND) -> DuplicateStrategy {
-    match ui::combo_index(st(hwnd).strategy) {
-        1 => DuplicateStrategy::Overwrite,
-        2 => DuplicateStrategy::Append,
-        _ => DuplicateStrategy::Skip,
-    }
-}
-
 fn import_from_file(hwnd: HWND) {
     let Some(path) = ui::pick_file(
         hwnd,
@@ -335,7 +324,7 @@ fn import_from_file(hwnd: HWND) {
         }
     };
 
-    let strategy = selected_strategy(hwnd);
+    let strategy = DuplicateStrategy::from_combo(ui::combo_index(st(hwnd).strategy));
     let current = app::state().vault.entry_count();
     let question = format!(
         "将导入 {} 个条目。\n\n当前有 {current} 条，重复条目：{}。\n\n导入前自动备份原文件为 data.pkk.bak。是否继续？",

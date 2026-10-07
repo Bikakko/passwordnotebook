@@ -54,7 +54,7 @@ pub fn is_valid(input: &str) -> bool {
 }
 
 fn encode(data: &[u8]) -> String {
-    let mut out = String::with_capacity((data.len() * 8 + 4) / 5);
+    let mut out = String::with_capacity((data.len() * 8).div_ceil(5));
     let mut buffer: u32 = 0;
     let mut bits: u32 = 0;
 

@@ -1,10 +1,10 @@
 //! 主窗口:锁定 / 创建 / 已解锁 / 回收站 四种形态共用同一个顶层窗口。
 
-use std::ffi::c_void;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
+use windows::Win32::Graphics::Gdi::HBRUSH;
 use windows::Win32::UI::Controls::NMHDR;
 use windows::Win32::UI::WindowsAndMessaging::MSG;
 
@@ -121,7 +121,6 @@ const TIMER_HELLO_PROBE: usize = 5;
 const TIMER_IDLE_PERIOD: u32 = 5000;
 
 const ALL_CATEGORIES: &str = "全部";
-const UNCATEGORIZED: &str = "未分类";
 const ALL_TAGS: &str = "全部标签";
 const FAV_ONLY_LABEL: &str = "只看收藏";
 
@@ -189,6 +188,20 @@ pub struct MainUi {
     rows: Vec<String>,
     /// 回收站列表当前显示顺序对应的条目 id。
     bin_rows: Vec<String>,
+    /// 分类页签当前对应的分类名(与页签一一对应,`refresh_filters` 时更新)。
+    /// `refresh_list` 直接取用 —— 不然每个按键都要重建整份分类表。
+    category_names: Vec<String>,
+    /// 网格线画刷:建一次用到底,不在自定义绘制里每行现建现删。
+    grid_brush: HBRUSH,
+    /// 网格线的列宽缓存:每个绘制周期由自定义绘制的预绘制阶段量一次。
+    grid_columns: Vec<i32>,
+    /// 主列表每行的显示单元格(与 `rows` 同序)。
+    /// 列表是虚拟列表(`LVS_OWNERDATA`),行文本在控件索取时才由这里提供。
+    row_cells: Vec<[String; 6]>,
+    /// 回收站列表每行的显示单元格(与 `bin_rows` 同序)。
+    bin_row_cells: Vec<[String; 5]>,
+    /// `LVN_GETDISPINFO` 的复用缓冲:控件在本条消息返回前复制文本。
+    disp_buffer: Vec<u16>,
     /// 剪贴板自动清空:到期时间与期望内容。
     /// 内容可能是密码,用 `Zeroizing` 让它到期后自动抹掉。
     clipboard_deadline: Option<(Instant, Zeroizing<String>)>,
@@ -253,6 +266,12 @@ impl MainUi {
             bin_empty_hint: zero,
             rows: Vec::new(),
             bin_rows: Vec::new(),
+            category_names: Vec::new(),
+            grid_brush: HBRUSH::default(),
+            grid_columns: Vec::new(),
+            row_cells: Vec::new(),
+            bin_row_cells: Vec::new(),
+            disp_buffer: Vec::new(),
             clipboard_deadline: None,
             hello_available: false,
             pending_hello_dek: None,
@@ -295,11 +314,10 @@ pub fn apply_fonts(hwnd: HWND) {
     ui::listview_bold_header(s.list, bold);
     ui::listview_bold_header(s.bin_list, bold);
 
-    if s.list.0 != std::ptr::null_mut() {
-        ui::listview_set_row_height(s.list, scale(LIST_ROW_H));
-    }
-    if s.bin_list.0 != std::ptr::null_mut() {
-        ui::listview_set_row_height(s.bin_list, scale(LIST_ROW_H));
+    for list in [s.list, s.bin_list] {
+        if !list.0.is_null() {
+            ui::listview_set_row_height(list, scale(LIST_ROW_H));
+        }
     }
 }
 
@@ -378,7 +396,8 @@ fn listview(parent: HWND, id: usize) -> HWND {
     ui::create_window(
         "SysListView32",
         "",
-        WS_CHILD | WS_BORDER | WS_VSCROLL | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+        WS_CHILD | WS_BORDER | WS_VSCROLL | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL
+            | LVS_SHOWSELALWAYS | LVS_OWNERDATA,
         WS_EX_CLIENTEDGE,
         parent,
         id,
@@ -389,11 +408,18 @@ fn listview(parent: HWND, id: usize) -> HWND {
     )
 }
 
+/// 列表控件初始化:扩展样式(整行选中 + 网格线)与列。
+fn init_list(list: HWND, columns: &[ListColDef]) {
+    ui::listview_set_extended_style(list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
+    for (i, &(title, width, _)) in columns.iter().enumerate() {
+        ui::listview_add_column(list, i as i32, scale(width), title);
+    }
+}
+
 /// `WM_CREATE`:创建全部控件。
 pub fn on_create(hwnd: HWND, lparam: LPARAM) {
-    let state_ptr = unsafe { ui::create_param(lparam) } as *mut MainUi;
-    ui::set_user_data(hwnd, state_ptr as *mut c_void);
-    let s = unsafe { &mut *state_ptr };
+    unsafe { ui::attach_state::<MainUi>(hwnd, lparam) };
+    let s = st(hwnd);
 
     s.unlock_title = text(hwnd, "解锁密码本", ID_UNLOCK_TITLE);
     s.unlock_hint = text(
@@ -470,10 +496,7 @@ pub fn on_create(hwnd: HWND, lparam: LPARAM) {
     // 空状态:默认隐藏,列表为空时由 refresh_list / refresh_bin 显示出来。
     s.empty_hint = center_text(hwnd, "还没有条目。点「新建」开始记录。", ID_EMPTY_HINT);
 
-    ui::listview_set_extended_style(s.list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
-    for (i, &(title, width, _)) in MAIN_LIST_COLUMNS.iter().enumerate() {
-        ui::listview_add_column(s.list, i as i32, scale(width), title);
-    }
+    init_list(s.list, MAIN_LIST_COLUMNS);
 
     s.bin_title = text(hwnd, "回收站", ID_BIN_TITLE);
     s.bin_hint = text(
@@ -489,10 +512,10 @@ pub fn on_create(hwnd: HWND, lparam: LPARAM) {
     // 空状态:默认隐藏,由 refresh_bin 按回收站条数显示。
     s.bin_empty_hint = center_text(hwnd, "回收站是空的。", ID_BIN_EMPTY_HINT);
 
-    ui::listview_set_extended_style(s.bin_list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
-    for (i, &(title, width, _)) in BIN_LIST_COLUMNS.iter().enumerate() {
-        ui::listview_add_column(s.bin_list, i as i32, scale(width), title);
-    }
+    init_list(s.bin_list, BIN_LIST_COLUMNS);
+
+    // 网格线画刷是固定色的 GDI 对象:建一次用到底。
+    s.grid_brush = ui::create_solid_brush(GRIDLINE);
 
     ui::combo_add(s.sort_combo, "更新时间");
     ui::combo_add(s.sort_combo, "标题");
@@ -510,8 +533,7 @@ pub fn on_create(hwnd: HWND, lparam: LPARAM) {
     ui::set_timer(hwnd, TIMER_IDLE, TIMER_IDLE_PERIOD);
     ui::set_timer(hwnd, TIMER_HELLO_PROBE, 200);
 
-    refresh_filters(hwnd);
-    refresh_list(hwnd);
+    refresh_all(hwnd);
     apply_mode(hwnd);
 }
 
@@ -590,19 +612,6 @@ pub fn apply_mode(hwnd: HWND) {
     }
 }
 
-fn place(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) {
-    unsafe {
-        let _ = windows::Win32::UI::WindowsAndMessaging::MoveWindow(
-            hwnd,
-            x,
-            y,
-            w.max(1),
-            h.max(1),
-            true,
-        );
-    }
-}
-
 pub fn layout(hwnd: HWND) {
     layout_inner(hwnd);
     // 排完版立刻强制整窗(含子控件)重画。从最大化还原时窗口缩小,
@@ -630,11 +639,11 @@ fn layout_inner(hwnd: HWND) {
 
     if mode == Mode::Bin {
         let w = cw - pad * 2;
-        place(s.bin_title, pad, pad, w, scale(30));
-        place(s.bin_hint, pad, pad + scale(34), w, scale(44));
+        ui::move_to(s.bin_title, pad, pad, w, scale(30));
+        ui::move_to(s.bin_hint, pad, pad + scale(34), w, scale(44));
         let list_h = (ch - pad * 2 - scale(82) - scale(48)).max(scale(80));
-        place(s.bin_list, pad, pad + scale(82), w, list_h);
-        place(
+        ui::move_to(s.bin_list, pad, pad + scale(82), w, list_h);
+        ui::move_to(
             s.bin_empty_hint,
             pad,
             pad + scale(82) + list_h / 2 - scale(12),
@@ -644,10 +653,10 @@ fn layout_inner(hwnd: HWND) {
         let bin_percents: Vec<i32> = BIN_LIST_COLUMNS.iter().map(|c| c.2).collect();
         set_list_columns(s.bin_list, w, &bin_percents);
         let by = ch - pad - scale(36);
-        place(s.bin_restore_btn, pad, by, scale(110), scale(34));
-        place(s.bin_purge_btn, pad + scale(122), by, scale(120), scale(34));
-        place(s.bin_empty_btn, pad + scale(254), by, scale(130), scale(34));
-        place(s.bin_back_btn, pad + scale(396), by, scale(120), scale(34));
+        ui::move_to(s.bin_restore_btn, pad, by, scale(110), scale(34));
+        ui::move_to(s.bin_purge_btn, pad + scale(122), by, scale(120), scale(34));
+        ui::move_to(s.bin_empty_btn, pad + scale(254), by, scale(130), scale(34));
+        ui::move_to(s.bin_back_btn, pad + scale(396), by, scale(120), scale(34));
         return;
     }
 
@@ -658,16 +667,16 @@ fn layout_inner(hwnd: HWND) {
     let gap = scale(6);
     let mut x = margin;
     for b in [s.new_btn, s.gen_btn, s.bin_btn, s.taxonomy_btn, s.transfer_btn] {
-        place(b, x, margin, btn_w, btn_h);
+        ui::move_to(b, x, margin, btn_w, btn_h);
         x += btn_w + gap;
     }
     let right = cw - margin - btn_w;
-    place(s.lock_btn, right, margin, btn_w, btn_h);
-    place(s.settings_btn, right - btn_w - gap, margin, btn_w, btn_h);
+    ui::move_to(s.lock_btn, right, margin, btn_w, btn_h);
+    ui::move_to(s.settings_btn, right - btn_w - gap, margin, btn_w, btn_h);
 
     // 排序下拉移入工具栏(左下角那排操作按钮已删除)
     let sort_w = scale(140);
-    place(
+    ui::move_to(
         s.sort_combo,
         right - btn_w - gap - sort_w - scale(16),
         margin,
@@ -676,7 +685,7 @@ fn layout_inner(hwnd: HWND) {
     );
 
     let search_y = margin + btn_h + scale(8);
-    place(s.search, margin, search_y, cw - margin * 2, scale(28));
+    ui::move_to(s.search, margin, search_y, cw - margin * 2, scale(28));
 
     let top = search_y + scale(28) + scale(8);
     let status_h = scale(STATUS_H);
@@ -684,8 +693,8 @@ fn layout_inner(hwnd: HWND) {
 
     // 左侧:标签
     let pane_w = scale(190);
-    place(s.tag_label, margin, top, pane_w, scale(20));
-    place(
+    ui::move_to(s.tag_label, margin, top, pane_w, scale(20));
+    ui::move_to(
         s.tag_list,
         margin,
         top + scale(22),
@@ -706,8 +715,8 @@ fn layout_inner(hwnd: HWND) {
     let fav_h = scale(30);
     let fav_w = (scale(24) + fav_text_w + scale(12)).min(tabs_w / 3);
     let strip_w = (tabs_w - fav_w - scale(10)).max(scale(120));
-    place(s.cat_tabs, tabs_x, top, strip_w, tabs_h);
-    place(
+    ui::move_to(s.cat_tabs, tabs_x, top, strip_w, tabs_h);
+    ui::move_to(
         s.fav_only_btn,
         tabs_x + tabs_w - fav_w,
         top + (tabs_h - fav_h) / 2,
@@ -718,9 +727,9 @@ fn layout_inner(hwnd: HWND) {
     let list_y = top + tabs_h + scale(4);
     let list_h = (body_h - tabs_h - scale(4)).max(scale(60));
     // 列表占满整行宽度(开关只占页签那一行,不与列表抢位置)。
-    place(s.list, tabs_x, list_y, tabs_w, list_h);
+    ui::move_to(s.list, tabs_x, list_y, tabs_w, list_h);
     // 空状态提示叠在列表正中:列表此时没有内容,不会互相遮挡。
-    place(
+    ui::move_to(
         s.empty_hint,
         tabs_x,
         list_y + list_h / 2 - scale(12),
@@ -739,7 +748,7 @@ fn layout_inner(hwnd: HWND) {
         set_list_columns(s.list, tabs_w, &percents);
     }
 
-    place(s.status, margin, ch - status_h, cw - margin * 2, status_h);
+    ui::move_to(s.status, margin, ch - status_h, cw - margin * 2, status_h);
 }
 
 /// 表单形态的排版:一个限宽的竖直列。
@@ -748,51 +757,51 @@ fn layout_form(s: &MainUi, x: i32, mut y: i32, w: i32, create: bool) {
     let field_h = scale(30);
 
     if !create {
-        place(s.unlock_title, x, y, w, scale(32));
+        ui::move_to(s.unlock_title, x, y, w, scale(32));
         y += scale(42);
-        place(s.unlock_hint, x, y, w, scale(44));
+        ui::move_to(s.unlock_hint, x, y, w, scale(44));
         y += scale(54);
-        place(s.unlock_path_label, x, y, w, label_h);
+        ui::move_to(s.unlock_path_label, x, y, w, label_h);
         y += label_h + scale(4);
-        place(s.unlock_path, x, y, w, scale(22));
+        ui::move_to(s.unlock_path, x, y, w, scale(22));
         y += scale(36);
-        place(s.unlock_pw_label, x, y, w, label_h);
+        ui::move_to(s.unlock_pw_label, x, y, w, label_h);
         y += label_h + scale(4);
-        place(s.unlock_pw, x, y, w, field_h);
+        ui::move_to(s.unlock_pw, x, y, w, field_h);
         y += field_h + scale(8);
-        place(s.unlock_show, x, y, scale(140), scale(24));
+        ui::move_to(s.unlock_show, x, y, scale(140), scale(24));
         y += scale(42);
-        place(s.unlock_btn, x, y, scale(150), scale(36));
-        place(s.hello_btn, x + scale(166), y, scale(250), scale(36));
+        ui::move_to(s.unlock_btn, x, y, scale(150), scale(36));
+        ui::move_to(s.hello_btn, x + scale(166), y, scale(250), scale(36));
         y += scale(50);
-        place(s.forgot_btn, x, y, scale(150), scale(30));
-        place(s.goto_create_btn, x + scale(166), y, scale(160), scale(30));
+        ui::move_to(s.forgot_btn, x, y, scale(150), scale(30));
+        ui::move_to(s.goto_create_btn, x + scale(166), y, scale(160), scale(30));
         y += scale(44);
-        place(s.unlock_error, x, y, w, scale(48));
+        ui::move_to(s.unlock_error, x, y, w, scale(48));
     } else {
-        place(s.create_title, x, y, w, scale(32));
+        ui::move_to(s.create_title, x, y, w, scale(32));
         y += scale(42);
-        place(s.create_hint, x, y, w, scale(44));
+        ui::move_to(s.create_hint, x, y, w, scale(44));
         y += scale(54);
-        place(s.create_path_label, x, y, w, label_h);
+        ui::move_to(s.create_path_label, x, y, w, label_h);
         y += label_h + scale(4);
-        place(s.create_path, x, y, w, scale(22));
+        ui::move_to(s.create_path, x, y, w, scale(22));
         y += scale(36);
-        place(s.create_pw_label, x, y, w, label_h);
+        ui::move_to(s.create_pw_label, x, y, w, label_h);
         y += label_h + scale(4);
-        place(s.create_pw, x, y, w, field_h);
+        ui::move_to(s.create_pw, x, y, w, field_h);
         y += field_h + scale(8);
-        place(s.create_show, x, y, scale(140), scale(24));
+        ui::move_to(s.create_show, x, y, scale(140), scale(24));
         y += scale(32);
-        place(s.create_strength, x, y, w, scale(22));
+        ui::move_to(s.create_strength, x, y, w, scale(22));
         y += scale(32);
-        place(s.create_pw2_label, x, y, w, label_h);
+        ui::move_to(s.create_pw2_label, x, y, w, label_h);
         y += label_h + scale(4);
-        place(s.create_pw2, x, y, w, field_h);
+        ui::move_to(s.create_pw2, x, y, w, field_h);
         y += field_h + scale(18);
-        place(s.create_btn, x, y, scale(180), scale(36));
+        ui::move_to(s.create_btn, x, y, scale(180), scale(36));
         y += scale(50);
-        place(s.create_error, x, y, w, scale(48));
+        ui::move_to(s.create_error, x, y, w, scale(48));
     }
 }
 
@@ -858,6 +867,8 @@ fn refresh_filters(hwnd: HWND) {
     }
     let last = (TAB_CATEGORY_BASE + categories.len() as i32 - 1).max(TAB_ALL);
     ui::tabs_set_index(s.cat_tabs, previous.clamp(TAB_ALL, last));
+    // 缓存给 refresh_list 用:页签与它一一对应,搜索时不必每次按键都重算。
+    s.category_names = categories;
 
 
     // 标签 → 左侧列表
@@ -880,6 +891,13 @@ fn refresh_filters(hwnd: HWND) {
     ui::listbox_set_horizontal_extent(s.tag_list, max_w + scale(12));
 }
 
+/// 筛选区与主列表总是一起重建:`refresh_filters` 必须在前,
+/// `refresh_list` 要读页签与标签列表的当前选中值。
+fn refresh_all(hwnd: HWND) {
+    refresh_filters(hwnd);
+    refresh_list(hwnd);
+}
+
 fn refresh_list(hwnd: HWND) {
     // 先问"当前选中是哪条":它内部也会 st(hwnd),放到前面,免得与下面的 s 同时活着。
     let selected = selected_entry_id(hwnd);
@@ -896,19 +914,12 @@ fn refresh_list(hwnd: HWND) {
     let query = ui::get_text(s.search).trim().to_lowercase();
     let sort = ui::combo_index(s.sort_combo);
 
-    // 分类筛选要的名字先取好 —— 条目引用一旦借到手,就不好再调 app::state() 了。
+    // 分类筛选要的名字从 `refresh_filters` 的缓存里取(页签与它一一对应)。
     let category_filter = if tab == TAB_ALL {
         None
     } else {
-        app::state()
-            .vault
-            .known_categories()
-            .get((tab - TAB_CATEGORY_BASE) as usize)
-            .cloned()
+        s.category_names.get((tab - TAB_CATEGORY_BASE) as usize).cloned()
     };
-
-    // 只借引用,不 clone 整个 Entry —— 否则每个条目的密码副本也会跟着复制一遍。
-    let mut items: Vec<&Entry> = app::state().vault.active_entries().collect();
 
     // 分类页签 × 标签 × 搜索词 × 只看收藏,四项「与」关系叠加;
     // 判定规则放在可移植核心 `search` 里,单测覆盖叠加语义。
@@ -918,33 +929,40 @@ fn refresh_list(hwnd: HWND) {
         query: &query,
         favorites_only: ui::is_checked(s.fav_only_btn),
     };
-    items.retain(|e| filter.accept(e));
+
+    // 只借引用,不 clone 整个 Entry —— 否则每个条目的密码副本也会跟着复制一遍。
+    // 命中评分跟着条目一起收好:筛选时算过一次,排序不再重算。
+    let mut items: Vec<(&Entry, i32)> = app::state()
+        .vault
+        .active_entries()
+        .filter_map(|e| filter.score(e).map(|score| (e, score)))
+        .collect();
 
     // 收藏置顶、搜索命中优先这些规则都在可移植核心 `search` 里(那样才测得到);
     // 界面只负责把下拉框下标翻译成排序方式。
-    crate::search::sort_entries(&mut items, crate::search::SortMode::from_combo(sort), &query);
+    crate::search::sort_scored(&mut items, crate::search::SortMode::from_combo(sort));
 
-    ui::listview_clear(s.list);
     s.rows.clear();
-    for &entry in &items {
-        ui::listview_add_row(
-            s.list,
-            &[
-                display_title(entry),
-                entry.username.clone(),
-                entry.url.clone(),
-                display_category(entry),
-                entry.tags.join("、"),
-                timefmt::local_string(entry.updated),
-            ],
-        );
+    s.row_cells.clear();
+    for &(entry, _) in &items {
         s.rows.push(entry.id.clone());
+        s.row_cells.push([
+            display_title(entry),
+            entry.username.clone(),
+            entry.url.clone(),
+            display_category(entry),
+            entry.tags.join("、"),
+            timefmt::local_string(entry.updated),
+        ]);
     }
+    ui::listview_set_item_count(s.list, items.len());
+    // 行数没变但内容变了(比如编辑条目)时控件不会自动重画,这里显式刷新。
+    ui::listview_refresh(s.list);
 
-    if let Some(id) = selected {
-        if let Some(index) = s.rows.iter().position(|r| *r == id) {
-            ui::listview_select(s.list, index as i32);
-        }
+    if let Some(id) = selected
+        && let Some(index) = s.rows.iter().position(|r| *r == id)
+    {
+        ui::listview_select(s.list, index as i32);
     }
 
     // 空状态:提示要说清"为什么空"。库是空的才引导新建;
@@ -974,10 +992,10 @@ fn refresh_bin(hwnd: HWND) {
 
     // 同 refresh_list:只借引用,不 clone —— 回收站条目里也有密码副本。
     let mut items: Vec<&Entry> = app::state().vault.deleted_entries().collect();
-    items.sort_by(|a, b| b.deleted.cmp(&a.deleted));
+    items.sort_by_key(|a| std::cmp::Reverse(a.deleted));
 
-    ui::listview_clear(s.bin_list);
     s.bin_rows.clear();
+    s.bin_row_cells.clear();
     for &entry in &items {
         let deleted = entry.deleted.unwrap_or(now);
         let remaining = if retention <= 0 {
@@ -986,18 +1004,17 @@ fn refresh_bin(hwnd: HWND) {
             let days = ((deleted + retention * 86_400 - now) as f64 / 86_400.0).ceil();
             format!("剩余 {} 天", days.max(0.0) as i64)
         };
-        ui::listview_add_row(
-            s.bin_list,
-            &[
-                display_title(entry),
-                entry.username.clone(),
-                display_category(entry),
-                timefmt::local_string(deleted),
-                remaining,
-            ],
-        );
         s.bin_rows.push(entry.id.clone());
+        s.bin_row_cells.push([
+            display_title(entry),
+            entry.username.clone(),
+            display_category(entry),
+            timefmt::local_string(deleted),
+            remaining,
+        ]);
     }
+    ui::listview_set_item_count(s.bin_list, items.len());
+    ui::listview_refresh(s.bin_list);
 
     ui::set_visible(s.bin_empty_hint, s.bin_rows.is_empty());
 
@@ -1098,7 +1115,7 @@ fn selected_entry_id(hwnd: HWND) -> Option<String> {
     s.rows.get(index as usize).cloned()
 }
 
-fn with_entry<R>(hwnd: HWND, id: &str, f: impl FnOnce(&Entry) -> R) -> Option<R> {
+pub(crate) fn with_entry<R>(hwnd: HWND, id: &str, f: impl FnOnce(&Entry) -> R) -> Option<R> {
     let _ = hwnd;
     app::state()
         .vault
@@ -1117,7 +1134,7 @@ pub fn on_command(hwnd: HWND, id: usize, code: u16) {
         ID_UNLOCK_SHOW if code == BN_CLICKED => {
             let s = st(hwnd);
             let reveal = ui::is_checked(s.unlock_show);
-            ui::set_password_char(s.unlock_pw, if reveal { None } else { Some('\u{25CF}') });
+            ui::set_password_char(s.unlock_pw, if reveal { None } else { Some(MASK_CHAR) });
         }
         ID_UNLOCK_BTN if code == BN_CLICKED => unlock_with_password(hwnd),
         ID_HELLO_BTN if code == BN_CLICKED => unlock_with_hello(hwnd),
@@ -1137,19 +1154,14 @@ pub fn on_command(hwnd: HWND, id: usize, code: u16) {
         ID_CREATE_SHOW if code == BN_CLICKED => {
             let s = st(hwnd);
             let reveal = ui::is_checked(s.create_show);
-            let ch = if reveal { None } else { Some('\u{25CF}') };
+            let ch = if reveal { None } else { Some(MASK_CHAR) };
             ui::set_password_char(s.create_pw, ch);
             ui::set_password_char(s.create_pw2, ch);
         }
         ID_CREATE_PW if code == EN_CHANGE => {
             let s = st(hwnd);
             let value = ui::get_secret(s.create_pw);
-            let hint = if value.is_empty() {
-                "建议至少 12 位，混合大小写字母、数字与符号。".to_string()
-            } else {
-                let r = strength::evaluate(&value);
-                format!("强度：{} · {}", r.label, r.hint)
-            };
+            let hint = strength_line(&value, "建议至少 12 位，混合大小写字母、数字与符号。");
             ui::set_text(s.create_strength, &hint);
         }
         ID_CREATE_BTN if code == BN_CLICKED => create_vault(hwnd),
@@ -1173,20 +1185,17 @@ pub fn on_command(hwnd: HWND, id: usize, code: u16) {
         }
         ID_TAXONOMY_BTN if code == BN_CLICKED => {
             dlg_taxonomy::show(hwnd);
-            refresh_filters(hwnd);
-            refresh_list(hwnd);
+            refresh_all(hwnd);
         }
         ID_TRANSFER_BTN if code == BN_CLICKED => {
             // 只有真的改动过库(导入了东西)才刷新,避免一次纯导出也重排列表。
             if dlg_transfer::show(hwnd) {
-                refresh_filters(hwnd);
-                refresh_list(hwnd);
+                refresh_all(hwnd);
             }
         }
         ID_SETTINGS_BTN if code == BN_CLICKED => {
             dlg_settings::show(hwnd);
-            refresh_filters(hwnd);
-            refresh_list(hwnd);
+            refresh_all(hwnd);
             layout(hwnd);
         }
         ID_LOCK_BTN if code == BN_CLICKED => lock_vault(hwnd, true),
@@ -1216,13 +1225,13 @@ pub fn on_command(hwnd: HWND, id: usize, code: u16) {
             } else {
                 None
             };
-            if let Some(id) = id {
-                if ui::confirm(hwnd, "彻底删除后无法恢复，确定继续吗？", "彻底删除") {
-                    if let Err(e) = app::state().vault.purge(&id) {
-                        report_save_failed(hwnd, &e);
-                    }
-                    refresh_bin(hwnd);
+            if let Some(id) = id
+                && ui::confirm(hwnd, "彻底删除后无法恢复，确定继续吗？", "彻底删除")
+            {
+                if let Err(e) = app::state().vault.purge(&id) {
+                    report_save_failed(hwnd, &e);
                 }
+                refresh_bin(hwnd);
             }
         }
         ID_BIN_EMPTY_BTN if code == BN_CLICKED => {
@@ -1238,8 +1247,7 @@ pub fn on_command(hwnd: HWND, id: usize, code: u16) {
         }
         ID_BIN_BACK_BTN if code == BN_CLICKED => {
             app::state().mode = Mode::Unlocked;
-            refresh_filters(hwnd);
-            refresh_list(hwnd);
+            refresh_all(hwnd);
             apply_mode(hwnd);
         }
         _ => {}
@@ -1254,10 +1262,7 @@ pub fn on_notify(hwnd: HWND, lparam: LPARAM) -> isize {
 
     // 自定义绘制:增强列表网格线(水平分隔线与垂直列分隔线)
     if code == NM_CUSTOMDRAW && (header.hwndFrom == list || header.hwndFrom == bin_list) {
-        use windows::Win32::Foundation::COLORREF;
-        use windows::Win32::Graphics::Gdi::{
-            CreateSolidBrush, DeleteObject, FillRect, HGDIOBJ,
-        };
+        use windows::Win32::Graphics::Gdi::FillRect;
         use windows::Win32::UI::Controls::{
             CDDS_ITEMPOSTPAINT, CDDS_ITEMPREPAINT, CDDS_PREPAINT, CDRF_DODEFAULT,
             CDRF_NOTIFYITEMDRAW, CDRF_NOTIFYPOSTPAINT, NMLVCUSTOMDRAW,
@@ -1267,6 +1272,18 @@ pub fn on_notify(hwnd: HWND, lparam: LPARAM) -> isize {
         let stage = lvcd.nmcd.dwDrawStage;
 
         if stage == CDDS_PREPAINT {
+            // 列宽一个绘制周期内不会变:在预绘制阶段量一次,逐行绘制时直接用,
+            // 不再每行每列各向控件问一次。
+            let s = st(hwnd);
+            let col_count = if header.hwndFrom == bin_list {
+                BIN_LIST_COLUMNS.len()
+            } else {
+                MAIN_LIST_COLUMNS.len()
+            };
+            s.grid_columns.clear();
+            for col in 0..col_count {
+                s.grid_columns.push(ui::listview_get_column_width(header.hwndFrom, col as i32));
+            }
             return CDRF_NOTIFYITEMDRAW as isize;
         }
         if stage == CDDS_ITEMPREPAINT {
@@ -1275,7 +1292,8 @@ pub fn on_notify(hwnd: HWND, lparam: LPARAM) -> isize {
         if stage == CDDS_ITEMPOSTPAINT {
             let hdc = lvcd.nmcd.hdc;
             let rc = lvcd.nmcd.rc;
-            let brush = unsafe { CreateSolidBrush(COLORREF(GRIDLINE)) };
+            let s = st(hwnd);
+            let brush = s.grid_brush;
 
             // 1. 下方水平网格线
             let bottom_line = RECT {
@@ -1288,16 +1306,11 @@ pub fn on_notify(hwnd: HWND, lparam: LPARAM) -> isize {
                 FillRect(hdc, &bottom_line, brush);
             }
 
-            // 2. 垂直列分隔线
-            let col_count = if header.hwndFrom == bin_list {
-                BIN_LIST_COLUMNS.len()
-            } else {
-                MAIN_LIST_COLUMNS.len()
-            };
+            // 2. 垂直列分隔线(画刷与列宽都在上面备好,这里只画)
+            let separators = s.grid_columns.len().saturating_sub(1);
             let mut cur_x = rc.left;
-            for col in 0..(col_count - 1) {
-                let w = ui::listview_get_column_width(header.hwndFrom, col as i32);
-                cur_x += w;
+            for col in 0..separators {
+                cur_x += s.grid_columns[col];
                 let col_line = RECT {
                     left: cur_x - 1,
                     top: rc.top,
@@ -1308,13 +1321,39 @@ pub fn on_notify(hwnd: HWND, lparam: LPARAM) -> isize {
                     FillRect(hdc, &col_line, brush);
                 }
             }
-
-            unsafe {
-                let _ = DeleteObject(HGDIOBJ(brush.0));
-            }
             return CDRF_DODEFAULT as isize;
         }
         return CDRF_DODEFAULT as isize;
+    }
+
+    // 虚拟列表:控件按需索取某行某列的文本(列表建出来时带了 LVS_OWNERDATA)。
+    if code == LVN_GETDISPINFOW && (header.hwndFrom == list || header.hwndFrom == bin_list) {
+        use windows::core::PWSTR;
+        use windows::Win32::UI::Controls::{LVIF_TEXT, NMLVDISPINFOW};
+
+        let info = unsafe { &mut *(lparam.0 as *mut NMLVDISPINFOW) };
+        if info.item.mask.0 & LVIF_TEXT.0 != 0 {
+            let s = st(hwnd);
+            let row = info.item.iItem.max(0) as usize;
+            let col = info.item.iSubItem.max(0) as usize;
+            // 一律带界检查:陈旧索引(模态对话框期间库可能变)宁可显示空白,也不能 panic。
+            let text = if header.hwndFrom == bin_list {
+                s.bin_row_cells.get(row).and_then(|cells| cells.get(col))
+            } else {
+                s.row_cells.get(row).and_then(|cells| cells.get(col))
+            }
+            .map(String::as_str)
+            .unwrap_or("");
+
+            // 文本先抄进复用缓冲(不逐格开 Vec),控件在本条消息返回前复制走。
+            s.disp_buffer.clear();
+            s.disp_buffer.extend(text.encode_utf16());
+            let capacity = info.item.cchTextMax.max(1) as usize;
+            s.disp_buffer.truncate(capacity - 1);
+            s.disp_buffer.push(0);
+            info.item.pszText = PWSTR(s.disp_buffer.as_mut_ptr());
+        }
+        return 0;
     }
 
     if list == header.hwndFrom && code == NM_DBLCLK {
@@ -1492,7 +1531,7 @@ pub fn on_context_menu(hwnd: HWND) -> bool {
             sub.add(CMD_MOVE_BASE + index, name);
         }
         if !current_category.is_empty() {
-            sub.add(CMD_MOVE_NONE, "未分类");
+            sub.add(CMD_MOVE_NONE, UNCATEGORIZED);
         }
 
         menu.add_separator();
@@ -1505,11 +1544,11 @@ pub fn on_context_menu(hwnd: HWND) -> bool {
     }
 
     match menu.track(hwnd) {
-        Some(CMD_COPY_PW) => copy_password(hwnd),
-        Some(CMD_COPY_USER) => copy_username(hwnd),
-        Some(CMD_COPY_KEY) => copy_api_key(hwnd),
-        Some(CMD_COPY_ENDPOINT) => copy_api_endpoint(hwnd),
-        Some(CMD_OPEN_URL) => copy_selected_url(hwnd),
+        Some(CMD_COPY_PW) => copy_field(hwnd, &COPY_PASSWORD),
+        Some(CMD_COPY_USER) => copy_field(hwnd, &COPY_USERNAME),
+        Some(CMD_COPY_KEY) => copy_field(hwnd, &COPY_API_KEY),
+        Some(CMD_COPY_ENDPOINT) => copy_field(hwnd, &COPY_API_ENDPOINT),
+        Some(CMD_OPEN_URL) => copy_field(hwnd, &COPY_URL),
         Some(CMD_OPEN_BROWSER) => open_selected_url(hwnd),
         Some(CMD_FAVORITE) => toggle_favorite_selected(hwnd),
         Some(CMD_NEW) => new_entry(hwnd),
@@ -1548,8 +1587,7 @@ fn category_add(hwnd: HWND) {
     };
     match app::state().vault.add_category(&name) {
         Ok(()) => {
-            refresh_filters(hwnd);
-            refresh_list(hwnd);
+            refresh_all(hwnd);
         }
         Err(e) => report_op_failed(hwnd, &e, "新建分类失败"),
     }
@@ -1578,8 +1616,7 @@ fn category_rename(hwnd: HWND) {
     };
     match app::state().vault.rename_category(&old, &new) {
         Ok(()) => {
-            refresh_filters(hwnd);
-            refresh_list(hwnd);
+            refresh_all(hwnd);
         }
         Err(e) => report_op_failed(hwnd, &e, "重命名失败"),
     }
@@ -1600,7 +1637,7 @@ fn category_delete(hwnd: HWND) {
     let message = if affected == 0 {
         format!("确定删除分类「{name}」吗？")
     } else {
-        format!("确定删除分类「{name}」吗？该分类下的 {affected} 个条目会移到「未分类」。")
+        format!("确定删除分类「{name}」吗？该分类下的 {affected} 个条目会移到「{}」。", UNCATEGORIZED)
     };
     if !ui::confirm(hwnd, &message, "删除分类") {
         return;
@@ -1608,14 +1645,12 @@ fn category_delete(hwnd: HWND) {
 
     match app::state().vault.remove_category(&name) {
         Ok(()) => {
-            refresh_filters(hwnd);
-            refresh_list(hwnd);
+            refresh_all(hwnd);
         }
         Err(e) => {
             // 失败时分类其实已从内存里移除,要重绘才能与提示一致。
             report_op_failed(hwnd, &e, "删除失败");
-            refresh_filters(hwnd);
-            refresh_list(hwnd);
+            refresh_all(hwnd);
         }
     }
 }
@@ -1634,14 +1669,12 @@ fn move_selected_to_category(hwnd: HWND, category: String) {
     entry.category = category;
     match app::state().vault.update_entry(entry) {
         Ok(()) => {
-            refresh_filters(hwnd);
-            refresh_list(hwnd);
+            refresh_all(hwnd);
         }
         Err(e) => {
             // 内存里的分类已经改了,重绘一次才能与提示一致。
             report_op_failed(hwnd, &e, "移动失败");
-            refresh_filters(hwnd);
-            refresh_list(hwnd);
+            refresh_all(hwnd);
         }
     }
 }
@@ -1686,11 +1719,11 @@ pub fn on_timer(hwnd: HWND, id: usize) {
             if app::state().mode != Mode::Unlocked || dialog::is_modal_open() {
                 return;
             }
-            if let Some(timeout) = idle_timeout_seconds() {
-                if idle::idle_seconds() >= timeout {
-                    // 空闲锁定不能弹窗打断,未落盘的改动只能靠状态栏提示。
-                    lock_vault(hwnd, false);
-                }
+            if let Some(timeout) = idle_timeout_seconds()
+                && idle::idle_seconds() >= timeout
+            {
+                // 空闲锁定不能弹窗打断,未落盘的改动只能靠状态栏提示。
+                lock_vault(hwnd, false);
             }
         }
         TIMER_HELLO_PROBE => {
@@ -1764,6 +1797,17 @@ pub fn intercept_key(msg: &MSG) -> bool {
 
 fn set_unlock_error(hwnd: HWND, message: &str) {
     ui::set_text(st(hwnd).unlock_error, message);
+}
+
+/// 解锁表单复位:清空输入与错误、恢复遮蔽、取消「显示密码」勾选。
+///
+/// 解锁成功与锁定是仅有的两个出口,复位内容必须一致 —— 否则上次「显示密码」
+/// 的勾选会一直留到下一次解锁界面。
+fn reset_unlock_form(s: &MainUi) {
+    ui::set_text(s.unlock_pw, "");
+    ui::set_text(s.unlock_error, "");
+    ui::set_password_char(s.unlock_pw, Some(MASK_CHAR));
+    ui::set_checked(s.unlock_show, false);
 }
 
 fn unlock_with_password(hwnd: HWND) {
@@ -1912,16 +1956,12 @@ fn after_unlock(hwnd: HWND) {
     }
 
     let s = st(hwnd);
-    ui::set_text(s.unlock_pw, "");
-    ui::set_text(s.unlock_error, "");
     ui::set_text(s.unlock_btn, "解锁");
-    ui::set_password_char(s.unlock_pw, Some('\u{25CF}'));
-    ui::set_checked(s.unlock_show, false);
+    reset_unlock_form(s);
     // 「只看收藏」的上次状态跟着库走;下面的 refresh_list 会按它筛选。
     ui::set_checked(s.fav_only_btn, settings.favorites_only);
 
-    refresh_filters(hwnd);
-    refresh_list(hwnd);
+    refresh_all(hwnd);
     apply_mode(hwnd);
 
     // 上面几个都会重新 st(hwnd),所以这里重新取,别用上面那个 s。
@@ -1936,12 +1976,8 @@ fn create_vault(hwnd: HWND) {
 
     let fail = |msg: &str| ui::set_text(st(hwnd).create_error, msg);
 
-    if password.chars().count() < 6 {
-        fail("登录密码太短，请至少使用 6 位字符。");
-        return;
-    }
-    if password != confirm {
-        fail("两次输入的登录密码不一致。");
+    if let Err(message) = validate_new_password("登录密码", &password, &confirm) {
+        fail(&message);
         return;
     }
 
@@ -1987,14 +2023,13 @@ fn lock_vault(hwnd: HWND, may_prompt: bool) {
 
     {
         let s = st(hwnd);
-        ui::set_text(s.unlock_pw, "");
-        ui::set_text(s.unlock_error, "");
-        ui::set_password_char(s.unlock_pw, Some('\u{25CF}'));
-        ui::set_checked(s.unlock_show, false);
+        reset_unlock_form(s);
         s.rows.clear();
         s.bin_rows.clear();
-        ui::listview_clear(s.list);
-        ui::listview_clear(s.bin_list);
+        s.row_cells.clear();
+        s.bin_row_cells.clear();
+        ui::listview_set_item_count(s.list, 0);
+        ui::listview_set_item_count(s.bin_list, 0);
         // 空状态提示不必单独处理:紧接着的 apply_mode 会按新形态统一设置显隐。
         ui::set_text(s.status, "");
     }
@@ -2046,6 +2081,28 @@ pub(crate) fn save_failure_inline(e: &crate::error::VaultError) -> String {
     }
 }
 
+/// 强度提示行(创建表单与条目编辑器共用)。空密码时用调用方给的提示语。
+pub(crate) fn strength_line(value: &str, empty_hint: &str) -> String {
+    if value.is_empty() {
+        return empty_hint.to_string();
+    }
+    let r = strength::evaluate(value);
+    format!("强度：{} · {}", r.label, r.hint)
+}
+
+/// 新登录密码的通用校验(创建 / 修改 / 重设三条路径共用)。
+///
+/// `noun` 按路径给「登录密码」或「新的登录密码」——创建时没有「旧的」,文案不同。
+pub(crate) fn validate_new_password(noun: &str, pw1: &str, pw2: &str) -> Result<(), String> {
+    if pw1.chars().count() < 6 {
+        return Err(format!("{noun}太短，请至少使用 6 位字符。"));
+    }
+    if pw1 != pw2 {
+        return Err(format!("两次输入的{noun}不一致。"));
+    }
+    Ok(())
+}
+
 /// 新建条目。工具栏按钮与右键菜单共用这一条路径 ——
 /// 之前只有「右键列表下方空白处」一个入口,列表铺满视口后就再也点不到新建了。
 fn new_entry(hwnd: HWND) {
@@ -2056,14 +2113,12 @@ fn new_entry(hwnd: HWND) {
     };
     match app::state().vault.add_entry(entry) {
         Ok(()) => {
-            refresh_filters(hwnd);
-            refresh_list(hwnd);
+            refresh_all(hwnd);
         }
         Err(e) => {
             // 条目已在内存里,重绘一次让列表反映出这条未落盘的改动。
             report_save_failed(hwnd, &e);
-            refresh_filters(hwnd);
-            refresh_list(hwnd);
+            refresh_all(hwnd);
         }
     }
 }
@@ -2081,14 +2136,12 @@ fn edit_selected(hwnd: HWND) {
     if let Some(updated) = dlg_editor::show(hwnd, Some(&existing), &categories, &tags) {
         match app::state().vault.update_entry(updated) {
             Ok(()) => {
-                refresh_filters(hwnd);
-                refresh_list(hwnd);
+                refresh_all(hwnd);
             }
             Err(e) => {
                 // 改动已在内存里,重绘一次让列表反映出这条未落盘的修改。
                 report_save_failed(hwnd, &e);
-                refresh_filters(hwnd);
-                refresh_list(hwnd);
+                refresh_all(hwnd);
             }
         }
     }
@@ -2098,7 +2151,7 @@ fn delete_selected(hwnd: HWND) {
     let Some(id) = selected_entry_id(hwnd) else {
         return;
     };
-    let title = with_entry(hwnd, &id, |e| display_title(e)).unwrap_or_default();
+    let title = with_entry(hwnd, &id, display_title).unwrap_or_default();
     if !ui::confirm(
         hwnd,
         &format!("确定要把「{title}」移到回收站吗？"),
@@ -2109,8 +2162,7 @@ fn delete_selected(hwnd: HWND) {
     if let Err(e) = app::state().vault.move_to_bin(&id) {
         report_save_failed(hwnd, &e);
     }
-    refresh_filters(hwnd);
-    refresh_list(hwnd);
+    refresh_all(hwnd);
 }
 
 fn toggle_favorite_selected(hwnd: HWND) {
@@ -2151,8 +2203,7 @@ fn show_detail(hwnd: HWND) {
         return;
     };
     if dlg_detail::show(hwnd, &entry) {
-        refresh_filters(hwnd);
-        refresh_list(hwnd);
+        refresh_all(hwnd);
     }
 }
 
@@ -2181,92 +2232,86 @@ pub(crate) fn copy_text(main: HWND, text: Zeroizing<String>, what: &str, sensiti
     format!("已复制{what}，{seconds} 秒后清空剪贴板")
 }
 
-fn copy_password(hwnd: HWND) {
-    let Some(id) = selected_entry_id(hwnd) else {
-        return;
-    };
-    let Some(password) = with_entry(hwnd, &id, |e| e.password.clone()) else {
-        return;
-    };
-    if password.is_empty() {
-        ui::info(hwnd, "这个条目没有填写密码。", "提示");
-        return;
-    }
-
-    let message = copy_text(hwnd, password, "密码", true);
-    flash_status(hwnd, &message);
+/// 右键菜单「复制」项的描述:判空与取值的口径只在这里定义一次。
+struct CopySpec {
+    what: &'static str,
+    /// 敏感值(密码 / API 密钥)按设置安排自动清空剪贴板。
+    sensitive: bool,
+    /// 判空是否忽略首尾空白(用户名:「  」算没填)。
+    check_trim: bool,
+    /// 复制出的内容是否去首尾空白(网址/端点去,用户名原样)。
+    copy_trim: bool,
+    get: fn(&Entry) -> Zeroizing<String>,
 }
 
-fn copy_username(hwnd: HWND) {
-    let Some(id) = selected_entry_id(hwnd) else {
-        return;
-    };
-    let Some(username) = with_entry(hwnd, &id, |e| e.username.clone()) else {
-        return;
-    };
-    if username.trim().is_empty() {
-        ui::info(hwnd, "这个条目没有填写用户名。", "提示");
-        return;
-    }
+const COPY_PASSWORD: CopySpec = CopySpec {
+    what: "密码",
+    sensitive: true,
+    check_trim: false,
+    copy_trim: false,
+    get: |e| e.password.clone(),
+};
 
-    let message = copy_text(hwnd, Zeroizing::new(username), "用户名", false);
-    flash_status(hwnd, &message);
-}
+const COPY_USERNAME: CopySpec = CopySpec {
+    what: "用户名",
+    sensitive: false,
+    check_trim: true,
+    copy_trim: false,
+    get: |e| Zeroizing::new(e.username.clone()),
+};
 
-fn copy_api_key(hwnd: HWND) {
-    let Some(id) = selected_entry_id(hwnd) else {
-        return;
-    };
-    let Some(key) = with_entry(hwnd, &id, |e| e.api_key.clone()) else {
-        return;
-    };
-    if key.is_empty() {
-        ui::info(hwnd, "这个条目没有填写 API 密钥。", "提示");
-        return;
-    }
+const COPY_API_KEY: CopySpec = CopySpec {
+    what: "API 密钥",
+    sensitive: true,
+    check_trim: false,
+    copy_trim: false,
+    get: |e| e.api_key.clone(),
+};
 
-    let message = copy_text(hwnd, key, "API 密钥", true);
-    flash_status(hwnd, &message);
-}
+/// API 端点与网址同一待遇:去掉首尾空白,不自动清空。
+const COPY_API_ENDPOINT: CopySpec = CopySpec {
+    what: "API 端点",
+    sensitive: false,
+    check_trim: true,
+    copy_trim: true,
+    get: |e| Zeroizing::new(e.api_endpoint.clone()),
+};
 
-/// 复制 API 端点。与网址同一待遇:去掉首尾空白,不自动清空。
-fn copy_api_endpoint(hwnd: HWND) {
-    let Some(id) = selected_entry_id(hwnd) else {
-        return;
-    };
-    let Some(endpoint) = with_entry(hwnd, &id, |e| e.api_endpoint.clone()) else {
-        return;
-    };
-
-    let endpoint = endpoint.trim().to_string();
-    if endpoint.is_empty() {
-        ui::info(hwnd, "这个条目没有填写 API 端点。", "提示");
-        return;
-    }
-
-    let message = copy_text(hwnd, Zeroizing::new(endpoint), "API 端点", false);
-    flash_status(hwnd, &message);
-}
-
-/// 复制网址。
-///
-/// 与「打开网址」并列:多数时候用户要的是把地址粘到别处(配置、工单),
+/// 网址。与「打开网址」并列:多数时候用户要的是把地址粘到别处(配置、工单),
 /// 而不是现在就跳浏览器 —— API 服务地址请填「API 端点」,它同样可复制。
-fn copy_selected_url(hwnd: HWND) {
+const COPY_URL: CopySpec = CopySpec {
+    what: "网址",
+    sensitive: false,
+    check_trim: true,
+    copy_trim: true,
+    get: |e| Zeroizing::new(e.url.clone()),
+};
+
+/// 复制条目上的一个字段:空值给提示,敏感项按设置安排自动清空剪贴板。
+fn copy_field(hwnd: HWND, spec: &CopySpec) {
     let Some(id) = selected_entry_id(hwnd) else {
         return;
     };
-    let Some(url) = with_entry(hwnd, &id, |e| e.url.clone()) else {
+    let Some(value) = with_entry(hwnd, &id, spec.get) else {
         return;
     };
 
-    let url = url.trim().to_string();
-    if url.is_empty() {
-        ui::info(hwnd, "这个条目没有填写网址。", "提示");
+    let empty = if spec.check_trim {
+        value.trim().is_empty()
+    } else {
+        value.is_empty()
+    };
+    if empty {
+        ui::info(hwnd, &format!("这个条目没有填写{}。", spec.what), "提示");
         return;
     }
 
-    let message = copy_text(hwnd, Zeroizing::new(url), "网址", false);
+    let value = if spec.copy_trim {
+        Zeroizing::new(value.trim().to_string())
+    } else {
+        value
+    };
+    let message = copy_text(hwnd, value, spec.what, spec.sensitive);
     flash_status(hwnd, &message);
 }
 
@@ -2306,8 +2351,10 @@ pub fn confirm_exit(hwnd: HWND) -> bool {
     true
 }
 
-/// 窗口销毁时:抹掉内存中的密钥。**不要**清 DPAPI 缓存 ——
-/// 那样下次启动就需要重新输入登录密码,而设计目标是「屏保前保持免密」。
-pub fn on_destroy() {
+/// 窗口销毁时:回收窗口期建的 GDI 对象(网格线画刷),并抹掉内存中的密钥。
+/// **不要**清 DPAPI 缓存 —— 那样下次启动就需要重新输入登录密码,
+/// 而设计目标是「屏保前保持免密」。
+pub fn on_destroy(hwnd: HWND) {
+    ui::delete_brush(st(hwnd).grid_brush);
     app::state().vault.lock();
 }

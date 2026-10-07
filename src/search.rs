@@ -28,39 +28,88 @@ impl SortMode {
     }
 }
 
+/// 纯 ASCII 的「忽略大小写包含」(两侧都必须已经是 ASCII;**不**处理非 ASCII)。
+fn ascii_contains_fold(haystack: &str, needle: &str) -> bool {
+    let n = needle.len();
+    n > 0 && haystack.as_bytes().windows(n).any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
+/// 纯 ASCII 的「忽略大小写前缀」。
+fn ascii_starts_with_fold(haystack: &str, needle: &str) -> bool {
+    haystack
+        .as_bytes()
+        .get(..needle.len())
+        .is_some_and(|p| p.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
+/// 大小写不敏感的包含判断。纯 ASCII 时零分配;任一侧含非 ASCII 时回落到
+/// 「两边都转小写再 contains」—— Unicode 小写会改变长度,不能按字节比较。
+///
+/// `needle` 由调用方保证已转小写(与旧实现的契约一致)。
+fn contains_fold(haystack: &str, needle: &str) -> bool {
+    if haystack.is_ascii() && needle.is_ascii() {
+        ascii_contains_fold(haystack, needle)
+    } else {
+        haystack.to_lowercase().contains(needle)
+    }
+}
+
+/// 标题之外的字段:账号 40 → 网址/端点 30 → 标签 20 → 分类 15 → 备注 10 → 0。
+fn score_other_fields(entry: &Entry, query: &str) -> i32 {
+    if contains_fold(&entry.username, query) {
+        40
+    } else if contains_fold(&entry.url, query) || contains_fold(&entry.api_endpoint, query) {
+        // 网址与 API 端点同级:两者都是「服务地址」,命中记同样的分。
+        30
+    } else if entry.tags.iter().any(|t| contains_fold(t, query)) {
+        20
+    } else if contains_fold(&entry.category, query) {
+        15
+    } else if contains_fold(&entry.notes, query) {
+        10
+    } else {
+        0
+    }
+}
+
 /// 搜索命中质量:分数越高越靠前,0 表示没命中。
 ///
 /// 标题命中一律优先于其它字段 —— 用户输入的通常就是标题的一个片段。
 /// `query` 由调用方保证已 trim 并转成小写。
+///
+/// 纯 ASCII(网址、英文标题这类常见数据)走免分配路径;含非 ASCII 时逐字保持
+/// 旧实现的「转小写再比较」。两条路径的评分必须逐分一致,由
+/// `ascii_fast_path_matches_the_old_scoring` 用对照实现钉住。
 pub fn match_score(entry: &Entry, query: &str) -> i32 {
     if query.is_empty() {
         // 没有搜索词时所有条目「同样命中」,不参与排序。
         return 1;
     }
-    let hit = |s: &str| s.to_lowercase().contains(query);
-    let title = entry.title.to_lowercase();
-    if title == query {
-        100
-    } else if title.starts_with(query) {
-        80
-    } else if title.contains(query) {
-        60
-    } else if entry.username.to_lowercase().contains(query) {
-        40
-    } else if entry.url.to_lowercase().contains(query)
-        || entry.api_endpoint.to_lowercase().contains(query)
-    {
-        // 网址与 API 端点同级:两者都是「服务地址」,命中记同样的分。
-        30
-    } else if entry.tags.iter().any(|t| hit(t)) {
-        20
-    } else if entry.category.to_lowercase().contains(query) {
-        15
-    } else if entry.notes.to_lowercase().contains(query) {
-        10
+
+    if entry.title.is_ascii() && query.is_ascii() {
+        if entry.title.eq_ignore_ascii_case(query) {
+            return 100;
+        }
+        if ascii_starts_with_fold(&entry.title, query) {
+            return 80;
+        }
+        if ascii_contains_fold(&entry.title, query) {
+            return 60;
+        }
     } else {
-        0
+        let title = entry.title.to_lowercase();
+        if title == query {
+            return 100;
+        }
+        if title.starts_with(query) {
+            return 80;
+        }
+        if title.contains(query) {
+            return 60;
+        }
     }
+
+    score_other_fields(entry, query)
 }
 
 /// 条目是否命中搜索词(供筛选用)。
@@ -85,21 +134,48 @@ pub struct ListFilter<'a> {
 }
 
 impl ListFilter<'_> {
-    pub fn accept(&self, entry: &Entry) -> bool {
+    /// 命中评分:`None` 表示被筛掉,`Some` 的分值与 [`match_score`] 一致。
+    ///
+    /// 筛选与排序各需要一次评分 —— 调用方收集 `(entry, score)` 后交给
+    /// [`sort_scored`],同一份评分不必算两遍。
+    pub fn score(&self, entry: &Entry) -> Option<i32> {
         if self.favorites_only && !entry.favorite {
-            return false;
+            return None;
         }
         if self.category.is_some_and(|c| entry.category != c) {
-            return false;
+            return None;
         }
         if self.tag.is_some_and(|t| !entry.tags.iter().any(|x| x == t)) {
-            return false;
+            return None;
         }
-        if !self.query.is_empty() && !matches(entry, self.query) {
-            return false;
+        if self.query.is_empty() {
+            return Some(1);
         }
-        true
+        match match_score(entry, self.query) {
+            0 => None,
+            score => Some(score),
+        }
     }
+
+    pub fn accept(&self, entry: &Entry) -> bool {
+        self.score(entry).is_some()
+    }
+}
+
+/// 就地排序(评分由调用方提供):收藏置顶 → 命中质量 → 用户选的排序方式。
+///
+/// 与 [`sort_entries`] 同一套规则,区别只在于评分已在筛选阶段算好,这里不再重算。
+pub fn sort_scored(entries: &mut [(&Entry, i32)], mode: SortMode) {
+    entries.sort_by(|(a, a_score), (b, b_score)| {
+        b.favorite
+            .cmp(&a.favorite)
+            .then_with(|| b_score.cmp(a_score))
+            .then_with(|| match mode {
+                SortMode::Title => a.title.cmp(&b.title),
+                SortMode::Category => a.category.cmp(&b.category).then(a.title.cmp(&b.title)),
+                SortMode::Updated => b.updated.cmp(&a.updated),
+            })
+    });
 }
 
 /// 就地排序:收藏置顶 → 搜索命中质量 → 用户选的排序方式。
@@ -112,24 +188,13 @@ impl ListFilter<'_> {
 /// 而比较次数是 O(n log n) —— 直接在闭包里算等于把同样的字符串转换重复几十遍。
 /// 「装饰-排序-写回」也保持了对相等元素的稳定顺序,与原先 `sort_by` 的结果一致。
 pub fn sort_entries(entries: &mut [&Entry], mode: SortMode, query: &str) {
-    let mut keyed: Vec<(bool, i32, &Entry)> = entries
+    let mut keyed: Vec<(&Entry, i32)> = entries
         .iter()
-        .copied()
-        .map(|e| (e.favorite, match_score(e, query), e))
+        .map(|e| (*e, match_score(e, query)))
         .collect();
+    sort_scored(&mut keyed, mode);
 
-    keyed.sort_by(|(a_fav, a_score, a), (b_fav, b_score, b)| {
-        b_fav
-            .cmp(a_fav)
-            .then_with(|| b_score.cmp(a_score))
-            .then_with(|| match mode {
-                SortMode::Title => a.title.cmp(&b.title),
-                SortMode::Category => a.category.cmp(&b.category).then(a.title.cmp(&b.title)),
-                SortMode::Updated => b.updated.cmp(&a.updated),
-            })
-    });
-
-    for (slot, (_, _, entry)) in entries.iter_mut().zip(keyed) {
+    for (slot, (entry, _)) in entries.iter_mut().zip(keyed) {
         *slot = entry;
     }
 }
@@ -231,6 +296,77 @@ mod tests {
     fn missing_query_scores_zero() {
         assert_eq!(match_score(&entry("GitHub", "alice"), "gitlab"), 0);
         assert!(!matches(&entry("GitHub", "alice"), "gitlab"));
+    }
+
+    /// 免分配快路径必须与「两边都 to_lowercase 再比较」的旧写法逐分一致。
+    #[test]
+    fn ascii_fast_path_matches_the_old_scoring() {
+        fn old(entry: &Entry, query: &str) -> i32 {
+            if query.is_empty() {
+                return 1;
+            }
+            let hit = |s: &str| s.to_lowercase().contains(query);
+            let title = entry.title.to_lowercase();
+            if title == query {
+                100
+            } else if title.starts_with(query) {
+                80
+            } else if title.contains(query) {
+                60
+            } else if entry.username.to_lowercase().contains(query) {
+                40
+            } else if entry.url.to_lowercase().contains(query)
+                || entry.api_endpoint.to_lowercase().contains(query)
+            {
+                30
+            } else if entry.tags.iter().any(|t| hit(t)) {
+                20
+            } else if entry.category.to_lowercase().contains(query) {
+                15
+            } else if entry.notes.to_lowercase().contains(query) {
+                10
+            } else {
+                0
+            }
+        }
+
+        let values = [
+            "GitHub", "github 备用", "GITHUB", "中文标题", "Github·中文", "", "  ", "İstanbul",
+            "straße", "Straße",
+        ];
+        let queries = ["github", "备用", "中文", "git", "strasse", "istanbul", "z", " "];
+
+        for title in values {
+            for query in queries {
+                let e = Entry {
+                    title: title.into(),
+                    ..Default::default()
+                };
+                assert_eq!(
+                    match_score(&e, query),
+                    old(&e, query),
+                    "title={title:?} query={query:?}"
+                );
+            }
+        }
+        for username in values {
+            for query in queries {
+                let e = Entry {
+                    username: username.into(),
+                    url: "https://Example.COM/x".into(),
+                    api_endpoint: "HTTPS://API.Example.com".into(),
+                    category: "Ünïcode 分类".into(),
+                    notes: "Notlar #1".into(),
+                    tags: vec!["Önemli".into(), "urgent".into()],
+                    ..Default::default()
+                };
+                assert_eq!(
+                    match_score(&e, query),
+                    old(&e, query),
+                    "username={username:?} query={query:?}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -14,10 +14,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::model::{now_secs, Entry};
-use crate::strength;
 
 use super::app;
-use super::{dialog, dlg_generator, sys::*, ui::{self, ctl, label}};
+use super::{dialog, dlg_generator, sys::*, tokens::{MASK_CHAR, UNCATEGORIZED}, ui::{self, ctl, label}};
 
 const CLASS: &str = "PnbDlgEntryEditor";
 /// 标签复选框容器(自动换行 + 整区滚动)的窗口类。
@@ -71,9 +70,6 @@ const TAG_HGAP: i32 = 8;
 /// 客户区比算式少约 1 个逻辑像素,调小它最后一个复选框就会被裁掉一条边。
 const TAG_GLYPH_W: i32 = 24;
 const TAG_TAIL_W: i32 = 8;
-
-/// 分类下拉的第一项,对应「没有分类」。
-const UNCATEGORIZED_OPTION: &str = "未分类";
 
 struct EditorState {
     result: Entry,
@@ -166,7 +162,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             LRESULT(0)
         }
         WM_COMMAND => {
-            on_command(hwnd, (wparam.0 & 0xFFFF) as usize, ((wparam.0 >> 16) & 0xFFFF) as u16);
+            let (id, code) = dialog::command_params(wparam);
+            on_command(hwnd, id, code);
             LRESULT(0)
         }
         WM_MOUSEWHEEL => {
@@ -184,8 +181,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 }
 
 fn on_create(hwnd: HWND, lparam: LPARAM) {
-    let ptr = unsafe { ui::create_param(lparam) } as *mut EditorState;
-    ui::set_user_data(hwnd, ptr as *mut c_void);
+    unsafe { ui::attach_state::<EditorState>(hwnd, lparam) };
     let font = app::state().font;
     let s = st(hwnd);
 
@@ -212,8 +208,8 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     s.api_endpoint = ctl("EDIT", "", WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, hwnd, ID_ENDPOINT, (20, 336, COL_L_W, 30));
 
     // 遮蔽字符统一成 ●(ES_PASSWORD 的系统默认是 *),与详情弹窗一致。
-    ui::set_password_char(s.password, Some('\u{25CF}'));
-    ui::set_password_char(s.api_key, Some('\u{25CF}'));
+    ui::set_password_char(s.password, Some(MASK_CHAR));
+    ui::set_password_char(s.api_key, Some(MASK_CHAR));
 
     // 右列:分类 / 标签(自动换行的复选框,可滚动)/ 备注;与左边标题同一行起排。
     label(hwnd, "分类", ID_CAT_LABEL, (COL_R_X, 14, 120, 22));
@@ -260,7 +256,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     // 分类:只能从已创建的里面选,第一项是「未分类」。
     let current_category = s.result.category.clone();
     let available_categories = s.categories.clone();
-    ui::combo_add(s.category, UNCATEGORIZED_OPTION);
+    ui::combo_add(s.category, UNCATEGORIZED);
     let mut selected = 0i32;
     for (index, name) in available_categories.iter().enumerate() {
         ui::combo_add(s.category, name);
@@ -420,7 +416,7 @@ fn tag_box_on_vscroll(hwnd: HWND, wparam: WPARAM) {
     let Some(s) = tag_box_state(hwnd) else {
         return;
     };
-    let code = (wparam.0 & 0xFFFF) as usize;
+    let code = wparam.0 & 0xFFFF;
     let (page, line) = (s.view_h, s.line_h);
     let target = match code {
         SB_LINEUP => s.scroll - line,
@@ -505,27 +501,11 @@ unsafe extern "system" fn tag_box_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
     }
 }
 
-/// 在窗口创建后由调用方补充分类下拉项。
-#[allow(dead_code)]
-pub fn fill_categories(hwnd: HWND, categories: &[String], current: &str) {
-    let s = st(hwnd);
-    ui::combo_clear(s.category);
-    for c in categories {
-        ui::combo_add(s.category, c);
-    }
-    ui::set_text(s.category, current);
-}
-
 fn update_strength(hwnd: HWND) {
     let s = st(hwnd);
     let value = ui::get_secret(s.password);
     // 还没填密码时不显示任何强度说明(空行比「尚未填写密码」这种废话干净)。
-    let text = if value.is_empty() {
-        String::new()
-    } else {
-        let r = strength::evaluate(&value);
-        format!("强度：{} · {}", r.label, r.hint)
-    };
+    let text = super::main_ui::strength_line(&value, "");
     ui::set_text(s.strength, &text);
 }
 
@@ -535,7 +515,7 @@ fn on_command(hwnd: HWND, id: usize, code: u16) {
         ID_SHOW if code == BN_CLICKED => {
             let s = st(hwnd);
             let reveal = ui::is_checked(s.show_pw);
-            let ch = if reveal { None } else { Some('\u{25CF}') };
+            let ch = if reveal { None } else { Some(MASK_CHAR) };
             ui::set_password_char(s.password, ch);
             ui::set_password_char(s.api_key, ch);
         }

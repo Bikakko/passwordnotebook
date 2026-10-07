@@ -19,6 +19,7 @@ use super::main_ui;
 use super::{
     app, dialog, dlg_editor,
     sys::*,
+    tokens::MASK_CHAR,
     ui::{self, ctl, label},
 };
 
@@ -51,9 +52,6 @@ const FIELDS: [(&str, &str, bool, bool, bool); 7] = [
 /// 空值的遮蔽会临时关掉(见 `refresh_values`),否则「（未填写）」本身
 /// 会被点成一片圆点,反而看不出这里是空的。
 const EMPTY_HINT: &str = "（未填写）";
-
-/// 遮蔽用的字符,与编辑器里的「显示密码与密钥」一致。
-const MASK_CHAR: char = '\u{25CF}';
 
 // 布局(96 DPI 逻辑像素):标签在左,只读值占满右侧剩余宽度。
 const MARGIN: i32 = 20;
@@ -110,7 +108,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             LRESULT(0)
         }
         WM_COMMAND => {
-            on_command(hwnd, (wparam.0 & 0xFFFF) as usize, ((wparam.0 >> 16) & 0xFFFF) as u16);
+            let (id, code) = dialog::command_params(wparam);
+            on_command(hwnd, id, code);
             LRESULT(0)
         }
         WM_CLOSE => {
@@ -144,8 +143,7 @@ fn field_is_empty(entry: &Entry, index: usize) -> bool {
 }
 
 fn on_create(hwnd: HWND, lparam: LPARAM) {
-    let ptr = unsafe { ui::create_param(lparam) } as *mut DetailState;
-    ui::set_user_data(hwnd, ptr as *mut c_void);
+    unsafe { ui::attach_state::<DetailState>(hwnd, lparam) };
 
     for (index, &(name, _, sensitive, multiline, click_copy)) in FIELDS.iter().enumerate() {
         let y = ROW_Y0 + index as i32 * ROW_PITCH;
@@ -236,8 +234,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
 fn refresh_values(hwnd: HWND) {
     let s = st(hwnd);
     let reveal = ui::is_checked(s.show_secrets);
-    for index in 0..FIELDS.len() {
-        let (_, _, sensitive, multiline, _) = FIELDS[index];
+    for (index, &(_, _, sensitive, multiline, _)) in FIELDS.iter().enumerate() {
         if field_is_empty(&s.entry, index) {
             // 单行空值显示占位;备注留空,让用户自己高亮选取。空值的遮蔽
             // 一律关掉,否则「（未填写）」本身会被点成一片圆点。
@@ -331,10 +328,7 @@ fn edit_entry(hwnd: HWND) {
 
     // 无论落盘成败,内存里都已经是新值(先改内存再落盘);读回来刷新快照,
     // 让显示与库内状态一致 —— 失败时状态行会说明「改动还在内存里」。
-    let latest = app::state()
-        .vault
-        .document()
-        .and_then(|d| d.entries.iter().find(|e| e.id == id).cloned());
+    let latest = main_ui::with_entry(hwnd, &id, |e| e.clone());
     {
         let s = st(hwnd);
         if let Some(latest) = latest {

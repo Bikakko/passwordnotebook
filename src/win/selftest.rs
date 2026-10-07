@@ -95,10 +95,10 @@ pub fn run() -> i32 {
     // 「写不进去」是最容易被误判成代码 bug 的一类环境问题。
     write_probe("程序目录", crate::paths::data_dir());
     write_probe("TEMP", &std::env::temp_dir());
-    if let Some(path) = super::dpapi::cache_path() {
-        if let Some(dir) = path.parent() {
-            write_probe("免密缓存目录", dir);
-        }
+    if let Some(path) = super::dpapi::cache_path()
+        && let Some(dir) = path.parent()
+    {
+        write_probe("免密缓存目录", dir);
     }
 
     println!("-- 控制台诊断(中文乱码时看这里)--");
@@ -451,11 +451,13 @@ fn core_checks() -> usize {
         );
 
         // 设置写在库里,不产生额外的配置文件。
-        let mut settings = crate::model::Settings::default();
-        settings.clipboard_clear_seconds = 42;
-        settings.idle_lock_minutes = 7;
-        settings.favorites_only = true;
-        settings.column_widths = vec![147, 113, 170, 80, 160, 150];
+        let settings = crate::model::Settings {
+            clipboard_clear_seconds: 42,
+            idle_lock_minutes: 7,
+            favorites_only: true,
+            column_widths: vec![147, 113, 170, 80, 160, 150],
+            ..Default::default()
+        };
         check!("设置写入库内", unlocked.update_settings(settings).is_ok());
 
         // 「未落盘」标记:挡掉下一次写盘,改动应留在内存里并被如实标记。
@@ -932,19 +934,19 @@ fn tabs_probe() -> usize {
 }
 
 
-pub fn preview_requested() -> bool {
-    std::env::args().any(|a| a == "--ui-preview")
-}
-
-/// 只画一条标签条,用来肉眼检查外观(不需要打开数据库)。
-pub fn preview() -> i32 {
-    use super::sys::*;
+/// 自检预览共用的宿主窗口:`mode` 为 `Some` 时先装好全局状态与字体
+/// (恢复码 / 导入导出对话框要读它们),标签条预览传 `None`。
+fn preview_host(
+    mode: Option<super::app::Mode>,
+    style: u32,
+    title: &str,
+    width: i32,
+    height: i32,
+) -> windows::Win32::Foundation::HWND {
+    use super::app;
     use super::ui;
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-    use windows::Win32::UI::WindowsAndMessaging::{
-        DefWindowProcW, DestroyWindow, DispatchMessageW, PeekMessageW, ShowWindow, PM_REMOVE,
-        TranslateMessage, MSG, SW_SHOW, WS_OVERLAPPEDWINDOW,
-    };
+    use windows::Win32::UI::WindowsAndMessaging::DefWindowProcW;
 
     unsafe extern "system" fn host_proc(
         hwnd: HWND,
@@ -955,21 +957,39 @@ pub fn preview() -> i32 {
         unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
     }
 
+    if let Some(mode) = mode {
+        // 对话框会读全局状态里的字体和 DPI。这里必须用真实 DPI ——
+        // 用 96 会导致控件按 100% 摆放、而对话框按实际缩放开尺寸,预览就假了。
+        let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForSystem() }.max(96);
+        app::set(app::AppState {
+            settings: Default::default(),
+            vault: crate::vault::VaultService::new(),
+            font: Default::default(),
+            font_bold: Default::default(),
+            dpi,
+            main: HWND::default(),
+            mode,
+        });
+        app::state().font = ui::create_ui_font(false, dpi);
+        app::state().font_bold = ui::create_ui_font(true, dpi);
+    }
+
     let _ = ui::register_class("PnbPreviewHost", host_proc);
+    ui::create_window("PnbPreviewHost", title, style, 0, HWND::default(), 0, 0, 0, width, height)
+}
+
+/// 只画一条标签条,用来肉眼检查外观(不需要打开数据库)。
+pub fn preview() -> i32 {
+    use super::sys::*;
+    use super::ui;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DestroyWindow, DispatchMessageW, PeekMessageW, ShowWindow, PM_REMOVE, TranslateMessage,
+        MSG, SW_SHOW, WS_OVERLAPPEDWINDOW,
+    };
+
+    let host = preview_host(None, WS_OVERLAPPEDWINDOW.0, "标签条预览", 980, 240);
     ui::register_tab_strip_class();
 
-    let host = ui::create_window(
-        "PnbPreviewHost",
-        "标签条预览",
-        WS_OVERLAPPEDWINDOW.0,
-        0,
-        HWND::default(),
-        0,
-        0,
-        0,
-        980,
-        240,
-    );
     let strip = ui::create_window(
         "PnbTabStrip",
         "",
@@ -1014,54 +1034,18 @@ pub fn preview() -> i32 {
 }
 
 
-pub fn preview_recovery_requested() -> bool {
-    std::env::args().any(|a| a == "--ui-preview-recovery")
-}
-
 /// 只显示「恢复码」对话框,用来肉眼检查布局(不需要打开数据库)。
 pub fn preview_recovery() -> i32 {
     use super::app;
     use super::sys::*;
     use super::ui;
-    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-    use windows::Win32::UI::WindowsAndMessaging::DefWindowProcW;
 
-    unsafe extern "system" fn host_proc(
-        hwnd: HWND,
-        msg: u32,
-        wparam: WPARAM,
-        lparam: LPARAM,
-    ) -> LRESULT {
-        unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
-    }
-
-    // 对话框会读全局状态里的字体和 DPI。这里必须用真实 DPI ——
-    // 用 96 会导致控件按 100% 摆放、而对话框按实际缩放开尺寸,预览就假了。
-    let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForSystem() }.max(96);
-    app::set(app::AppState {
-        settings: Default::default(),
-        vault: crate::vault::VaultService::new(),
-        font: Default::default(),
-        font_bold: Default::default(),
-        dpi,
-        main: HWND::default(),
-        mode: app::Mode::Create,
-    });
-
-    app::state().font = ui::create_ui_font(false, dpi);
-    app::state().font_bold = ui::create_ui_font(true, dpi);
-
-    let _ = ui::register_class("PnbPreviewHost", host_proc);
-    let host = ui::create_window("PnbPreviewHost", "", WS_OVERLAPPED, 0, HWND::default(), 0, 0, 0, 200, 200);
+    let host = preview_host(Some(app::Mode::Create), WS_OVERLAPPED, "", 200, 200);
 
     super::dlg_recovery::show_code(host, "ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567", true);
 
     ui::destroy_window(host);
     0
-}
-
-pub fn preview_transfer_requested() -> bool {
-    std::env::args().any(|a| a == "--ui-preview-transfer")
 }
 
 /// 只显示「导入 / 导出」对话框,用来肉眼检查布局(不需要打开数据库)。
@@ -1071,37 +1055,25 @@ pub fn preview_transfer() -> i32 {
     use super::app;
     use super::sys::*;
     use super::ui;
-    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-    use windows::Win32::UI::WindowsAndMessaging::DefWindowProcW;
 
-    unsafe extern "system" fn host_proc(
-        hwnd: HWND,
-        msg: u32,
-        wparam: WPARAM,
-        lparam: LPARAM,
-    ) -> LRESULT {
-        unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
-    }
-
-    let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForSystem() }.max(96);
-    app::set(app::AppState {
-        settings: Default::default(),
-        vault: crate::vault::VaultService::new(),
-        font: Default::default(),
-        font_bold: Default::default(),
-        dpi,
-        main: HWND::default(),
-        mode: app::Mode::Unlocked,
-    });
-
-    app::state().font = ui::create_ui_font(false, dpi);
-    app::state().font_bold = ui::create_ui_font(true, dpi);
-
-    let _ = ui::register_class("PnbPreviewHost", host_proc);
-    let host = ui::create_window("PnbPreviewHost", "", WS_OVERLAPPED, 0, HWND::default(), 0, 0, 0, 200, 200);
+    let host = preview_host(Some(app::Mode::Unlocked), WS_OVERLAPPED, "", 200, 200);
 
     super::dlg_transfer::show(host);
 
     ui::destroy_window(host);
     0
+}
+
+/// 识别三个预览开关并运行对应预览;没有开关返回 `None`。
+pub fn preview_mode() -> Option<i32> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--ui-preview") {
+        Some(preview())
+    } else if args.iter().any(|a| a == "--ui-preview-recovery") {
+        Some(preview_recovery())
+    } else if args.iter().any(|a| a == "--ui-preview-transfer") {
+        Some(preview_transfer())
+    } else {
+        None
+    }
 }

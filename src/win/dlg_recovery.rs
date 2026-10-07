@@ -6,7 +6,6 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::DefWindowProcW;
 
 use crate::recovery;
-use crate::vault::VaultService;
 
 use super::app;
 use super::{clipboard, dialog, sys::*, ui::{self, ctl}};
@@ -48,8 +47,7 @@ pub fn show_code(owner: HWND, code: &str, initial: bool) {
 unsafe extern "system" fn code_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_CREATE => {
-            let ptr = unsafe { ui::create_param(lparam) } as *mut CodeState;
-            ui::set_user_data(hwnd, ptr as *mut std::ffi::c_void);
+            unsafe { ui::attach_state::<CodeState>(hwnd, lparam) };
             let s = st_code(hwnd);
 
             ctl(
@@ -104,15 +102,14 @@ unsafe extern "system" fn code_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
         WM_COMMAND => {
             // 注意:id 相同的不同控件会发不同通知码,必须一起判断。
             // (只读输入框的 id 恰好也是 2,它发的 EN_CHANGE 曾被误当成 IDCANCEL。)
-            let id = (wparam.0 & 0xFFFF) as usize;
-            let code = ((wparam.0 >> 16) & 0xFFFF) as u16;
+            let (id, code) = dialog::command_params(wparam);
             let s = st_code(hwnd);
             match (id, code) {
                 (C_COPY, BN_CLICKED) => {
                     clipboard::set_text(&s.code);
                 }
                 (C_SAVE, BN_CLICKED) => save_code(hwnd, &s.code),
-                (C_CONFIRM, BN_CLICKED) => ui::enable(s.ok, is_confirmed(s)),
+                (C_CONFIRM, BN_CLICKED) => ui::enable(s.ok, ui::is_checked(s.confirm)),
                 (C_OK, BN_CLICKED) => ui::destroy_window(hwnd),
                 (IDCANCEL, BN_CLICKED) => close_with_warning(hwnd),
                 _ => {}
@@ -131,14 +128,10 @@ fn st_code(hwnd: HWND) -> &'static mut CodeState {
     unsafe { ui::state_ref::<CodeState>(hwnd) }
 }
 
-fn is_confirmed(s: &CodeState) -> bool {
-    ui::send_msg(s.confirm, BM_GETCHECK, 0, 0) == BST_CHECKED
-}
-
 /// 直接关闭(点 X 或按 ESC)时的兜底提醒:恢复码没抄下来就关,风险很大。
 fn close_with_warning(hwnd: HWND) {
     let s = st_code(hwnd);
-    if !is_confirmed(s) && !ui::confirm(hwnd, RECOVERY_UNSAVED_MESSAGE, "注意") {
+    if !ui::is_checked(s.confirm) && !ui::confirm(hwnd, RECOVERY_UNSAVED_MESSAGE, "注意") {
         return;
     }
     ui::destroy_window(hwnd);
@@ -212,9 +205,8 @@ pub fn show_recover(owner: HWND, vault_path: &str) -> bool {
 unsafe extern "system" fn recover_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_CREATE => {
-            let ptr = unsafe { ui::create_param(lparam) } as *mut RecoverState;
-            ui::set_user_data(hwnd, ptr as *mut std::ffi::c_void);
-            let s = unsafe { &mut *ptr };
+            unsafe { ui::attach_state::<RecoverState>(hwnd, lparam) };
+            let s = st_recover(hwnd);
 
             ctl(
                 "STATIC",
@@ -269,7 +261,7 @@ unsafe extern "system" fn recover_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
             LRESULT(0)
         }
         WM_COMMAND => {
-            let id = (wparam.0 & 0xFFFF) as usize;
+            let (id, _) = dialog::command_params(wparam);
             match id {
                 R_SUBMIT => do_reset(hwnd),
                 R_CANCEL => ui::destroy_window(hwnd),
@@ -295,12 +287,8 @@ fn do_reset(hwnd: HWND) {
         ui::set_text(s.error, "恢复码格式不正确，应为 32 位字符（可含连字符）。");
         return;
     }
-    if pw1.chars().count() < 6 {
-        ui::set_text(s.error, "新的登录密码太短，请至少使用 6 位字符。");
-        return;
-    }
-    if pw1 != pw2 {
-        ui::set_text(s.error, "两次输入的新登录密码不一致。");
+    if let Err(message) = super::main_ui::validate_new_password("新的登录密码", &pw1, &pw2) {
+        ui::set_text(s.error, &message);
         return;
     }
 
@@ -329,6 +317,3 @@ fn do_reset(hwnd: HWND) {
 fn st_recover(hwnd: HWND) -> &'static mut RecoverState {
     unsafe { ui::state_ref::<RecoverState>(hwnd) }
 }
-
-#[allow(dead_code)]
-fn unused_vault(_: &VaultService) {}

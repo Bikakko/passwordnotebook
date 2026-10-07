@@ -9,15 +9,16 @@ use std::sync::{Mutex, OnceLock};
 use windows::core::{BOOL, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    CreateFontIndirectW, DeleteObject, GetSysColorBrush, InvalidateRect, RedrawWindow, ScreenToClient,
-    SetBkMode, SetTextColor, UpdateWindow, BACKGROUND_MODE, CLEARTYPE_QUALITY, COLOR_WINDOW, HBRUSH,
-    HDC, HFONT, HGDIOBJ, LOGFONTW, RDW_ALLCHILDREN, RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW,
+    CreateFontIndirectW, CreateSolidBrush, DeleteObject, GetSysColorBrush, InvalidateRect,
+    RedrawWindow, ScreenToClient, SetBkMode, SetTextColor, UpdateWindow, BACKGROUND_MODE,
+    CLEARTYPE_QUALITY, COLOR_WINDOW, HBRUSH, HDC, HFONT, HGDIOBJ, LOGFONTW,
+    RDW_ALLCHILDREN, RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{
     LIST_VIEW_ITEM_FLAGS, LIST_VIEW_ITEM_STATE_FLAGS, LVCFMT_LEFT, LVCOLUMNW, LVCOLUMNW_FORMAT,
-    LVCOLUMNW_MASK, LVCF_FMT, LVCF_SUBITEM, LVCF_TEXT, LVCF_WIDTH, LVIF_TEXT, LVIS_FOCUSED,
-    LVIS_SELECTED, LVITEMW,
+    LVCOLUMNW_MASK, LVCF_FMT, LVCF_SUBITEM, LVCF_TEXT, LVCF_WIDTH, LVIS_FOCUSED, LVIS_SELECTED,
+    LVITEMW,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
@@ -25,7 +26,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DestroyMenu, DestroyWindow, EnumChildWindows,
     GetClassNameW, GetCursorPos, GetDlgItem, GetWindowLongPtrW, GetWindowTextLengthW,
     GetWindowTextW, HMENU, IDC_ARROW,
-    HICON, IsZoomed, KillTimer, LoadCursorW, LoadIconW, MESSAGEBOX_STYLE, MessageBoxW, MF_GRAYED,
+    HICON, KillTimer, LoadCursorW, LoadIconW, MESSAGEBOX_STYLE, MessageBoxW, MF_GRAYED,
     MF_POPUP,
     MF_SEPARATOR, MF_STRING,
     NONCLIENTMETRICSW, PostMessageW, RegisterClassW, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
@@ -170,6 +171,18 @@ pub fn create_window_with_param(
         )
         .unwrap_or_default()
     }
+}
+
+/// `WM_CREATE`:取出 lparam 里的状态指针,挂到窗口上。
+///
+/// 状态由 `dialog::open`(或主窗口的 `run_main_inner`)用 `Box::into_raw` 交出;
+/// 调用方随后用 [`state_ref`] 重新取。窗口销毁时由各自的收尾负责回收。
+///
+/// # Safety
+/// 只能在窗口过程的 `WM_CREATE` 分支里调用,且 `lparam` 必须是该消息的原始参数。
+pub unsafe fn attach_state<T>(hwnd: HWND, lparam: LPARAM) {
+    let ptr = unsafe { create_param(lparam) } as *mut T;
+    set_user_data(hwnd, ptr as *mut c_void);
 }
 
 /// 在 `WM_CREATE` 中取回 `create_window_with_param` 传入的指针。
@@ -464,11 +477,28 @@ pub fn set_checked(hwnd: HWND, checked: bool) {
     send_msg(hwnd, BM_SETCHECK, usize::from(checked), 0);
 }
 
-pub fn listbox_add(hwnd: HWND, text: &str) {
+/// 建一个纯色画刷(配套 [`delete_brush`] 回收)。
+pub fn create_solid_brush(color: u32) -> HBRUSH {
+    unsafe { CreateSolidBrush(COLORREF(color)) }
+}
+
+/// 回收画刷。
+pub fn delete_brush(brush: HBRUSH) {
+    unsafe {
+        let _ = DeleteObject(HGDIOBJ(brush.0));
+    }
+}
+
+/// 往组合框 / 列表框追加一项文本(两种控件的 ADDSTRING 消息形状一致)。
+fn add_string(hwnd: HWND, message: u32, text: &str) {
     let w = Wz::new(text);
     unsafe {
-        SendMessageW(hwnd, LB_ADDSTRING, None, Some(LPARAM(w.0.as_ptr() as isize)));
+        SendMessageW(hwnd, message, None, Some(LPARAM(w.0.as_ptr() as isize)));
     }
+}
+
+pub fn listbox_add(hwnd: HWND, text: &str) {
+    add_string(hwnd, LB_ADDSTRING, text);
 }
 
 pub fn listbox_clear(hwnd: HWND) {
@@ -476,14 +506,7 @@ pub fn listbox_clear(hwnd: HWND) {
 }
 
 pub fn combo_add(hwnd: HWND, text: &str) {
-    let w = Wz::new(text);
-    unsafe {
-        SendMessageW(hwnd, CB_ADDSTRING, None, Some(LPARAM(w.0.as_ptr() as isize)));
-    }
-}
-
-pub fn combo_clear(hwnd: HWND) {
-    send_msg(hwnd, CB_RESETCONTENT, 0, 0);
+    add_string(hwnd, CB_ADDSTRING, text);
 }
 
 pub fn combo_set_index(hwnd: HWND, index: i32) {
@@ -494,20 +517,25 @@ pub fn combo_index(hwnd: HWND) -> i32 {
     send_msg(hwnd, CB_GETCURSEL, 0, 0) as i32
 }
 
-pub fn combo_item_text(hwnd: HWND, index: i32) -> String {
+/// 读取组合框 / 列表框某项的文本:先问长度开缓冲,再取内容。
+fn item_text(hwnd: HWND, length_message: u32, text_message: u32, index: i32) -> String {
     if index < 0 {
         return String::new();
     }
-    let len = send_msg(hwnd, CB_GETLBTEXTLEN, index as usize, 0);
+    let len = send_msg(hwnd, length_message, index as usize, 0);
     if len <= 0 {
         return String::new();
     }
     let mut buf = vec![0u16; len as usize + 1];
-    let n = send_msg(hwnd, CB_GETLBTEXT, index as usize, buf.as_mut_ptr() as isize);
+    let n = send_msg(hwnd, text_message, index as usize, buf.as_mut_ptr() as isize);
     if n <= 0 {
         return String::new();
     }
     String::from_utf16_lossy(&buf[..n as usize])
+}
+
+pub fn combo_item_text(hwnd: HWND, index: i32) -> String {
+    item_text(hwnd, CB_GETLBTEXTLEN, CB_GETLBTEXT, index)
 }
 
 // ---------- 列表 / 列表视图 ----------
@@ -517,16 +545,7 @@ pub fn listbox_index(hwnd: HWND) -> i32 {
 }
 
 pub fn listbox_text(hwnd: HWND, index: i32) -> String {
-    if index < 0 {
-        return String::new();
-    }
-    let len = send_msg(hwnd, LB_GETTEXTLEN, index as usize, 0);
-    if len <= 0 {
-        return String::new();
-    }
-    let mut buf = vec![0u16; len as usize + 1];
-    let n = send_msg(hwnd, LB_GETTEXT, index as usize, buf.as_mut_ptr() as isize);
-    String::from_utf16_lossy(&buf[..n.max(0) as usize])
+    item_text(hwnd, LB_GETTEXTLEN, LB_GETTEXT, index)
 }
 
 /// 按文本精确查找列表框项,找不到返回 -1。
@@ -540,8 +559,16 @@ pub fn listbox_set_horizontal_extent(hwnd: HWND, width: i32) {
     send_msg(hwnd, LB_SETHORIZONTALEXTENT, width.max(0) as usize, 0);
 }
 
-pub fn listview_clear(hwnd: HWND) {
-    send_msg(hwnd, LVM_DELETEALLITEMS, 0, 0);
+/// 设置虚拟列表(`LVS_OWNERDATA`)的条目总数。
+pub fn listview_set_item_count(hwnd: HWND, count: usize) {
+    send_msg(hwnd, LVM_SETITEMCOUNT, count, 0);
+}
+
+/// 让列表视图整块重画(不擦背景,避免闪烁)。
+pub fn listview_refresh(hwnd: HWND) {
+    unsafe {
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
 }
 
 pub fn listview_add_column(hwnd: HWND, index: i32, width: i32, title: &str) {
@@ -565,62 +592,6 @@ pub fn listview_add_column(hwnd: HWND, index: i32, width: i32, title: &str) {
         index as usize,
         &mut column as *mut _ as isize,
     );
-}
-
-/// 插入一行;`cells` 为各列文本。返回行号,失败时返回负数。
-pub fn listview_add_row(hwnd: HWND, cells: &[String]) -> i32 {
-    let first = Wz::new(cells.first().map(String::as_str).unwrap_or(""));
-    let mut item = LVITEMW {
-        mask: LIST_VIEW_ITEM_FLAGS(LVIF_TEXT.0),
-        iItem: i32::MAX, // 追加到末尾
-        iSubItem: 0,
-        state: LIST_VIEW_ITEM_STATE_FLAGS(0),
-        stateMask: LIST_VIEW_ITEM_STATE_FLAGS(0),
-        pszText: PWSTR(first.0.as_ptr() as *mut u16),
-        cchTextMax: 0,
-        iImage: 0,
-        lParam: LPARAM(0),
-        iIndent: 0,
-        iGroupId: 0,
-        cColumns: 0,
-        puColumns: std::ptr::null_mut(),
-        piColFmt: std::ptr::null_mut(),
-        iGroup: 0,
-    };
-
-    let index = send_msg(hwnd, LVM_INSERTITEMW, 0, &mut item as *mut _ as isize) as i32;
-    if index < 0 {
-        return index;
-    }
-
-    for (sub, text) in cells.iter().enumerate().skip(1) {
-        let buf = Wz::new(text);
-        let mut sub_item = LVITEMW {
-            mask: LIST_VIEW_ITEM_FLAGS(LVIF_TEXT.0),
-            iItem: index,
-            iSubItem: sub as i32,
-            state: LIST_VIEW_ITEM_STATE_FLAGS(0),
-            stateMask: LIST_VIEW_ITEM_STATE_FLAGS(0),
-            pszText: PWSTR(buf.0.as_ptr() as *mut u16),
-            cchTextMax: 0,
-            iImage: 0,
-            lParam: LPARAM(0),
-            iIndent: 0,
-            iGroupId: 0,
-            cColumns: 0,
-            puColumns: std::ptr::null_mut(),
-            piColFmt: std::ptr::null_mut(),
-            iGroup: 0,
-        };
-        send_msg(
-            hwnd,
-            LVM_SETITEMTEXTW,
-            index as usize,
-            &mut sub_item as *mut _ as isize,
-        );
-    }
-
-    index
 }
 
 pub fn listview_set_extended_style(hwnd: HWND, style: u32) {
@@ -1278,11 +1249,6 @@ pub fn listview_item_at(list: HWND, screen_pt: POINT) -> i32 {
         i_sub_item: 0,
     };
     send_msg(list, LVM_HITTEST, 0, &mut info as *mut _ as isize) as i32
-}
-
-/// 窗口当前是否处于最大化状态。
-pub fn is_maximized(hwnd: HWND) -> bool {
-    unsafe { IsZoomed(hwnd).as_bool() }
 }
 
 /// 让整个窗口(含子控件)重绘一次(不立即执行)。

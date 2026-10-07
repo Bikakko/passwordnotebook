@@ -3,7 +3,7 @@
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HWND, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, IsDialogMessageW, IsWindow, MSG, TranslateMessage,
 };
@@ -21,6 +21,14 @@ static MODAL_DEPTH: AtomicU32 = AtomicU32::new(0);
 /// 失败,用户填了一半的内容就白填了。
 pub fn is_modal_open() -> bool {
     MODAL_DEPTH.load(Ordering::Relaxed) > 0
+}
+
+/// 解码 `WM_COMMAND` 的 wparam:(控件 id, 通知码)。
+///
+/// 各对话框的窗口过程都按这个约定分派,统一在这里解开,免得每处都写
+/// 一遍低位/高位的位运算(顺带消掉一批 `as usize` 噪音)。
+pub fn command_params(wparam: WPARAM) -> (usize, u16) {
+    (wparam.0 & 0xFFFF, ((wparam.0 >> 16) & 0xFFFF) as u16)
 }
 
 /// 运行对话框自己的消息循环,直到该窗口被销毁。

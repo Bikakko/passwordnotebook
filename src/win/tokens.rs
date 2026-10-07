@@ -4,12 +4,6 @@
 //! 新增控件时优先从这里取值,不要再写裸数字。
 
 // ---------- 间距 ----------
-pub const SPACE_XS: i32 = 4;
-pub const SPACE_SM: i32 = 8;
-pub const SPACE_MD: i32 = 12;
-pub const SPACE_LG: i32 = 16;
-pub const SPACE_XL: i32 = 20;
-
 /// 窗口/对话框内容的外边距。
 pub const MARGIN: i32 = 20;
 
@@ -46,3 +40,9 @@ pub const STRIP_TEXT: u32 = 0x0046_4646; // #464646
 pub const STRIP_TEXT_ON: u32 = 0x0016_1616;
 pub const STRIP_SEPARATOR: u32 = 0x00DC_DCDC; // #DCDCDC
 pub const STRIP_ACCENT: u32 = 0x00EB_6F2F; // #2F6FEB 选中下划线
+
+// ---------- 文本 ----------
+/// 敏感字段的遮蔽字符(详情弹窗、主界面的解锁/创建表单共用)。
+pub const MASK_CHAR: char = '\u{25CF}';
+/// 未填写分类的条目在界面上的显示名(列表、编辑器下拉、右键菜单共用)。
+pub const UNCATEGORIZED: &str = "未分类";

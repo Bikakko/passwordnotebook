@@ -24,10 +24,26 @@ const FIXED_LEN: usize = PREFIX_LEN + WRAPPED_KEY_LEN * 2 + 4;
 
 impl VaultFile {
     pub fn looks_like_vault(path: &Path) -> bool {
-        match std::fs::read(path) {
-            Ok(bytes) => bytes.len() >= FIXED_LEN && bytes[0..4] == crate::header::MAGIC,
-            Err(_) => false,
+        let Ok(mut file) = std::fs::File::open(path) else {
+            return false;
+        };
+        let Ok(metadata) = file.metadata() else {
+            return false;
+        };
+        if metadata.len() < FIXED_LEN as u64 {
+            return false;
         }
+        let mut magic = [0u8; 4];
+        std::io::Read::read_exact(&mut file, &mut magic).is_ok() && magic == crate::header::MAGIC
+    }
+
+    /// 只读文件头(固定的 105 字节前缀),不读载荷 ——
+    /// 解锁前判断免密缓存是否可用的场景用不到后面那几 MB。
+    pub fn read_header(path: &Path) -> Result<VaultHeader, VaultError> {
+        let mut buf = [0u8; PREFIX_LEN];
+        let mut file = std::fs::File::open(path)?;
+        std::io::Read::read_exact(&mut file, &mut buf)?;
+        VaultHeader::from_prefix(&buf)
     }
 
     pub fn read(path: &Path) -> Result<Self, VaultError> {
@@ -136,10 +152,10 @@ pub(crate) fn replace_file(tmp: &Path, path: &Path) -> std::io::Result<()> {
 
     // POSIX:目录项本身也要落盘,否则断电后可能退回旧目录项。
     #[cfg(unix)]
-    if let Some(dir) = path.parent() {
-        if let Ok(handle) = std::fs::File::open(dir) {
-            let _ = handle.sync_all();
-        }
+    if let Some(dir) = path.parent()
+        && let Ok(handle) = std::fs::File::open(dir)
+    {
+        let _ = handle.sync_all();
     }
     Ok(())
 }
@@ -217,6 +233,29 @@ mod tests {
 
         let read = VaultFile::read(&path).unwrap();
         assert_eq!(read.payload, file.payload);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 只读文件头必须与完整读取得到的头部一致;前缀被截断时必须报错。
+    #[test]
+    fn read_header_matches_full_read() {
+        let dir = std::env::temp_dir().join(format!("pnb-rs-hdr-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("v.pkk");
+
+        let file = sample();
+        file.write_atomic(&path).unwrap();
+
+        let header = VaultFile::read_header(&path).unwrap();
+        let full = VaultFile::read(&path).unwrap().header;
+        assert_eq!(header.vault_id, full.vault_id);
+        assert_eq!(header.password_salt, full.password_salt);
+        assert_eq!(header.key_generation, full.key_generation);
+
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::write(&path, &bytes[..PREFIX_LEN - 1]).unwrap();
+        assert!(VaultFile::read_header(&path).is_err());
 
         std::fs::remove_dir_all(&dir).ok();
     }

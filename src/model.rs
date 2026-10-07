@@ -50,10 +50,6 @@ impl Entry {
     pub fn is_deleted(&self) -> bool {
         self.deleted.is_some()
     }
-
-    pub fn touch(&mut self) {
-        self.updated = now_secs();
-    }
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -114,8 +110,6 @@ pub struct Settings {
     pub clipboard_clear_seconds: u32,
     /// 回收站保留天数。
     pub bin_retention_days: i64,
-    /// 窗口置顶。
-    pub always_on_top: bool,
     /// 「只看收藏」筛选开关的最后状态(跟着库走)。
     pub favorites_only: bool,
     /// 自定义列表各列宽度(逻辑像素, 96 DPI 基准):[标题, 用户名, 网址, 分类, 标签, 更新时间]。
@@ -132,7 +126,6 @@ impl Default for Settings {
             idle_lock_minutes: 0,
             clipboard_clear_seconds: 20,
             bin_retention_days: 30,
-            always_on_top: false,
             favorites_only: false,
             column_widths: Vec::new(),
         }
@@ -149,7 +142,8 @@ mod tests {
         assert!(default_settings.column_widths.is_empty());
         assert!(!default_settings.favorites_only);
 
-        // 旧版本 JSON 没有 column_widths / favorites_only 字段,能正常反序列化
+        // 旧版本 JSON 没有 column_widths / favorites_only 字段,能正常反序列化。
+        // 这里还刻意带着已移除的 always_on_top 字段:旧文件里有它时也必须能读(未知字段被忽略)。
         let old_json = r#"{
             "quick_unlock_enabled": true,
             "require_windows_hello": false,
@@ -165,6 +159,7 @@ mod tests {
         // 默认状态下空 column_widths 不会被序列化出来
         let serialized = serde_json::to_string(&s).expect("序列化失败");
         assert!(!serialized.contains("column_widths"));
+        assert!(!serialized.contains("always_on_top"), "已移除的字段不应再被写进文件");
 
         // 自定义列宽与「只看收藏」时正常序列化与反序列化
         let mut custom = s;

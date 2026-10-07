@@ -9,6 +9,11 @@ const DIGITS: &str = "0123456789";
 const SYMBOLS: &str = "!@#$%^&*()-_=+[]{};:,.?/";
 const AMBIGUOUS: &str = "Il1O0o|`'\"";
 
+/// 长度下限 / 上限 / 默认值:生成逻辑与界面共用同一份,避免两边各写一个数。
+pub const MIN_LENGTH: usize = 4;
+pub const MAX_LENGTH: usize = 256;
+pub const DEFAULT_LENGTH: usize = 20;
+
 #[derive(Clone, Debug)]
 pub struct Options {
     pub length: usize,
@@ -22,7 +27,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            length: 20,
+            length: DEFAULT_LENGTH,
             upper: true,
             lower: true,
             digits: true,
@@ -61,7 +66,7 @@ pub fn generate(options: &Options) -> Result<String> {
         }
     }
 
-    let length = options.length.clamp(4, 256);
+    let length = options.length.clamp(MIN_LENGTH, MAX_LENGTH);
     let all: String = pools.concat();
 
     let mut chars: Vec<char> = Vec::with_capacity(length);

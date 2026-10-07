@@ -48,7 +48,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             LRESULT(0)
         }
         WM_COMMAND => {
-            on_command(hwnd, (wparam.0 & 0xFFFF) as usize, ((wparam.0 >> 16) & 0xFFFF) as u16);
+            let (id, code) = dialog::command_params(wparam);
+            on_command(hwnd, id, code);
             LRESULT(0)
         }
         WM_CLOSE => {
@@ -60,8 +61,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 }
 
 fn on_create(hwnd: HWND, lparam: LPARAM) {
-    let ptr = unsafe { ui::create_param(lparam) } as *mut InputState;
-    ui::set_user_data(hwnd, ptr as *mut std::ffi::c_void);
+    unsafe { ui::attach_state::<InputState>(hwnd, lparam) };
     let s = st(hwnd);
 
     // 提示文案由调用方通过窗口标题之外的方式给出,这里直接用标题即可;

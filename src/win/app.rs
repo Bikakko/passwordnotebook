@@ -64,9 +64,3 @@ pub fn state() -> &'static mut AppState {
             .expect("应用状态尚未初始化")
     }
 }
-
-pub fn clear() {
-    unsafe {
-        *GLOBAL.0.get() = None;
-    }
-}

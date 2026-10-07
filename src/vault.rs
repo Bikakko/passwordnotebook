@@ -87,28 +87,14 @@ impl VaultService {
 
     /// 读取文件头(不需要解锁),用于判断本机免密缓存是否可用。
     pub fn peek_header(path: &Path) -> Result<VaultHeader> {
-        Ok(VaultFile::read(path)?.header)
+        VaultFile::read_header(path)
     }
 
     /// 只校验主密码是否正确,不改变当前解锁状态。
     pub fn verify_master_password(path: &Path, master_password: &str) -> bool {
-        match VaultFile::read(path) {
-            Ok(file) => {
-                let h = &file.header;
-                unwrap_with_secret(
-                    master_password.as_bytes(),
-                    &h.password_salt,
-                    &h.password_nonce,
-                    &file.password_wrapped,
-                    &h.password_slot_aad(),
-                    h.m_cost_kib,
-                    h.t_cost,
-                    h.p_cost,
-                )
-                .is_ok()
-            }
-            Err(_) => false,
-        }
+        VaultFile::read(path)
+            .map(|file| unwrap_slot(master_password.as_bytes(), &file, Slot::Password).is_ok())
+            .unwrap_or(false)
     }
 
     // ---------- 创建与解锁 ----------
@@ -178,17 +164,7 @@ impl VaultService {
 
     pub fn open(&mut self, path: &Path, master_password: &str) -> Result<()> {
         let file = VaultFile::read(path)?;
-        let h = &file.header;
-        let dek = unwrap_with_secret(
-            master_password.as_bytes(),
-            &h.password_salt,
-            &h.password_nonce,
-            &file.password_wrapped,
-            &h.password_slot_aad(),
-            h.m_cost_kib,
-            h.t_cost,
-            h.p_cost,
-        )?;
+        let dek = unwrap_slot(master_password.as_bytes(), &file, Slot::Password)?;
         self.adopt(path, file, dek, false)
     }
 
@@ -197,17 +173,7 @@ impl VaultService {
             .ok_or(VaultError::WrongSecret("恢复码格式不正确。"))?;
 
         let file = VaultFile::read(path)?;
-        let h = &file.header;
-        let dek = unwrap_with_secret(
-            normalized.as_bytes(),
-            &h.recovery_salt,
-            &h.recovery_nonce,
-            &file.recovery_wrapped,
-            &h.recovery_slot_aad(),
-            h.m_cost_kib,
-            h.t_cost,
-            h.p_cost,
-        )?;
+        let dek = unwrap_slot(normalized.as_bytes(), &file, Slot::Recovery)?;
         self.adopt(path, file, dek, true)
     }
 
@@ -224,16 +190,27 @@ impl VaultService {
             )
             .map_err(|_| VaultError::WrongSecret("免密缓存已失效，请输入登录密码。"))?,
         );
-
         let document: Document = serde_json::from_slice(&plain)?;
+        self.install(path, file, dek, document, false);
+        Ok(())
+    }
+
+    /// 解锁 / 取回密钥后的最后一步:把整份状态装进服务。
+    fn install(
+        &mut self,
+        path: &Path,
+        file: VaultFile,
+        dek: Zeroizing<Vec<u8>>,
+        document: Document,
+        via_recovery: bool,
+    ) {
         self.file = Some(file);
         self.dek = Some(dek);
         self.document = Some(document);
         self.path = Some(path.to_path_buf());
-        self.unlocked_with_recovery = false;
+        self.unlocked_with_recovery = via_recovery;
         // 刚从磁盘读出来,内存与磁盘天然一致。
         self.dirty = false;
-        Ok(())
     }
 
     fn adopt(&mut self, path: &Path, file: VaultFile, dek: Zeroizing<Vec<u8>>, via_recovery: bool) -> Result<()> {
@@ -245,13 +222,7 @@ impl VaultService {
             &file.header.payload_aad(),
         )?);
         let document: Document = serde_json::from_slice(&plain)?;
-
-        self.file = Some(file);
-        self.dek = Some(dek);
-        self.document = Some(document);
-        self.path = Some(path.to_path_buf());
-        self.unlocked_with_recovery = via_recovery;
-        self.dirty = false;
+        self.install(path, file, dek, document, via_recovery);
         Ok(())
     }
 
@@ -308,6 +279,66 @@ impl VaultService {
         }
     }
 
+    /// 重包一个密钥槽并原子落盘(改主密码 / 重设密码 / 重生成恢复码共用)。
+    ///
+    /// 先在临时头部上把新槽位算好,中途任何一步失败都不碰 `self.file` ——
+    /// 否则内存头部会与磁盘对不上,之后一次 save() 就把半成品写出去,槽再也解不开。
+    /// 写盘失败时头部与该槽成对回滚。
+    ///
+    /// 密码槽会把 `key_generation` 加一(换了密钥,本机免密缓存随之失效);
+    /// 恢复码槽不动它 —— 重生成恢复码不改变数据密钥。
+    fn rewrite_slot(&mut self, slot: Slot, secret: &[u8]) -> Result<()> {
+        let path = self.path.clone().ok_or(VaultError::Locked)?;
+        let dek = Zeroizing::new(self.dek.as_ref().ok_or(VaultError::Locked)?.to_vec());
+        let file = self.file.as_mut().ok_or(VaultError::Locked)?;
+
+        let mut header = file.header.clone();
+        let (salt, nonce, aad) = match slot {
+            Slot::Password => {
+                header.password_salt = crypto::random_array()?;
+                header.password_nonce = crypto::random_array()?;
+                header.key_generation = header.key_generation.wrapping_add(1);
+                (header.password_salt, header.password_nonce, header.password_slot_aad())
+            }
+            Slot::Recovery => {
+                header.recovery_salt = crypto::random_array()?;
+                header.recovery_nonce = crypto::random_array()?;
+                (header.recovery_salt, header.recovery_nonce, header.recovery_slot_aad())
+            }
+        };
+        let wrapped = wrap_with_secret(
+            secret,
+            &salt,
+            &nonce,
+            &dek,
+            &aad,
+            header.m_cost_kib,
+            header.t_cost,
+            header.p_cost,
+        )?;
+
+        // 到这里才落到 self.file;写盘失败则把头部与该槽一起回滚。
+        let previous_header = std::mem::replace(&mut file.header, header);
+        let previous_wrapped = match slot {
+            Slot::Password => std::mem::replace(&mut file.password_wrapped, wrapped),
+            Slot::Recovery => std::mem::replace(&mut file.recovery_wrapped, wrapped),
+        };
+        if let Err(e) = file.write_atomic(&path) {
+            file.header = previous_header;
+            match slot {
+                Slot::Password => file.password_wrapped = previous_wrapped,
+                Slot::Recovery => file.recovery_wrapped = previous_wrapped,
+            }
+            return Err(e);
+        }
+
+        // 主密码不再是最初解开它的那个:恢复码临时会话的标记随之清掉。
+        if matches!(slot, Slot::Password) {
+            self.unlocked_with_recovery = false;
+        }
+        Ok(())
+    }
+
     // ---------- 登录密码 ----------
 
     pub fn change_master_password(&mut self, current: &str, new: &str) -> Result<()> {
@@ -315,45 +346,8 @@ impl VaultService {
         if !Self::verify_master_password(&path, current) {
             return Err(VaultError::WrongSecret("当前登录密码不正确。"));
         }
-
         self.flush_pending_before_slot_write();
-
-        let dek = Zeroizing::new(self.dek.as_ref().ok_or(VaultError::Locked)?.to_vec());
-        let file = self.file.as_mut().ok_or(VaultError::Locked)?;
-
-        // 先在临时头部上把新槽位算好,中途任何一步失败都不碰 self.file ——
-        // 否则内存头部会与磁盘对不上,之后一次 save() 就把半成品写出去,
-        // 主密码槽再也解不开。
-        let mut header = file.header.clone();
-        header.password_salt = crypto::random_array()?;
-        header.password_nonce = crypto::random_array()?;
-        header.key_generation = header.key_generation.wrapping_add(1);
-
-        let (m, t, p) = (header.m_cost_kib, header.t_cost, header.p_cost);
-        let aad = header.password_slot_aad();
-        let wrapped = wrap_with_secret(
-            new.as_bytes(),
-            &header.password_salt,
-            &header.password_nonce,
-            &dek,
-            &aad,
-            m,
-            t,
-            p,
-        )?;
-
-        // 到这里才落到 self.file;写盘失败则整体回滚到改动前的状态。
-        let previous_header = std::mem::replace(&mut file.header, header);
-        let previous_wrapped = std::mem::replace(&mut file.password_wrapped, wrapped);
-
-        if let Err(e) = file.write_atomic(&path) {
-            file.header = previous_header;
-            file.password_wrapped = previous_wrapped;
-            return Err(e);
-        }
-
-        self.unlocked_with_recovery = false;
-        Ok(())
+        self.rewrite_slot(Slot::Password, new.as_bytes())
     }
 
     /// 恢复码流程专用:在已知数据密钥的前提下重设主密码,不校验旧密码。
@@ -374,74 +368,18 @@ impl VaultService {
     }
 
     fn reset_master_password_inner(&mut self, new: &str) -> Result<()> {
-        let path = self.path.clone().ok_or(VaultError::Locked)?;
         self.flush_pending_before_slot_write();
-        let dek = Zeroizing::new(self.dek.as_ref().ok_or(VaultError::Locked)?.to_vec());
-        let file = self.file.as_mut().ok_or(VaultError::Locked)?;
-
-        // 同 change_master_password:先在临时头部上把新槽位算好,中途任何一步失败
-        // 都不碰 self.file —— 否则内存头部会与磁盘对不上,之后一次 save() 就把
-        // 半成品写出去,主密码槽再也解不开。
-        let mut header = file.header.clone();
-        header.password_salt = crypto::random_array()?;
-        header.password_nonce = crypto::random_array()?;
-        header.key_generation = header.key_generation.wrapping_add(1);
-
-        let (m, t, p) = (header.m_cost_kib, header.t_cost, header.p_cost);
-        let aad = header.password_slot_aad();
-        let wrapped = wrap_with_secret(new.as_bytes(), &header.password_salt, &header.password_nonce, &dek, &aad, m, t, p)?;
-
-        // 到这里才落到 self.file;写盘失败则整体回滚到改动前的状态。
-        let previous_header = std::mem::replace(&mut file.header, header);
-        let previous_wrapped = std::mem::replace(&mut file.password_wrapped, wrapped);
-
-        if let Err(e) = file.write_atomic(&path) {
-            file.header = previous_header;
-            file.password_wrapped = previous_wrapped;
-            return Err(e);
-        }
-
-        self.unlocked_with_recovery = false;
-        Ok(())
+        self.rewrite_slot(Slot::Password, new.as_bytes())
     }
 
     /// 重新生成恢复码,返回新码(旧码立即失效)。
     pub fn regenerate_recovery_code(&mut self) -> Result<String> {
-        let path = self.path.clone().ok_or(VaultError::Locked)?;
         self.flush_pending_before_slot_write();
-        let dek = Zeroizing::new(self.dek.as_ref().ok_or(VaultError::Locked)?.to_vec());
-        let file = self.file.as_mut().ok_or(VaultError::Locked)?;
 
         let code = recovery::generate()?;
         let normalized = recovery::normalize(&code)
             .ok_or_else(|| VaultError::Crypto("恢复码生成失败。".into()))?;
-
-        // 同 change_master_password:先在临时头部上算好,失败不碰 self.file。
-        let mut header = file.header.clone();
-        header.recovery_salt = crypto::random_array()?;
-        header.recovery_nonce = crypto::random_array()?;
-
-        let (m, t, p) = (header.m_cost_kib, header.t_cost, header.p_cost);
-        let aad = header.recovery_slot_aad();
-        let wrapped = wrap_with_secret(
-            normalized.as_bytes(),
-            &header.recovery_salt,
-            &header.recovery_nonce,
-            &dek,
-            &aad,
-            m,
-            t,
-            p,
-        )?;
-
-        let previous_header = std::mem::replace(&mut file.header, header);
-        let previous_wrapped = std::mem::replace(&mut file.recovery_wrapped, wrapped);
-
-        if let Err(e) = file.write_atomic(&path) {
-            file.header = previous_header;
-            file.recovery_wrapped = previous_wrapped;
-            return Err(e);
-        }
+        self.rewrite_slot(Slot::Recovery, normalized.as_bytes())?;
 
         Ok(code)
     }
@@ -481,7 +419,7 @@ impl VaultService {
             .filter(|c| !c.trim().is_empty())
             .cloned()
             .collect();
-        out.sort_by(|a, b| a.cmp(b));
+        out.sort();
         out.dedup();
         out
     }
@@ -503,7 +441,7 @@ impl VaultService {
             .filter(|t| !t.trim().is_empty())
             .cloned()
             .collect();
-        out.sort_by(|a, b| a.cmp(b));
+        out.sort();
         out.dedup();
         out
     }
@@ -519,7 +457,7 @@ impl VaultService {
         let category = entry.category.clone();
         let document = self.document.as_mut().ok_or(VaultError::Locked)?;
         document.entries.push(entry);
-        ensure_category(document, &category);
+        ensure_name(&mut document.categories, &category, false);
         self.commit_in_place()
     }
 
@@ -544,7 +482,7 @@ impl VaultService {
         target.favorite = entry.favorite;
         target.updated = now_secs();
 
-        ensure_category(document, &category);
+        ensure_name(&mut document.categories, &category, false);
         self.commit_in_place()
     }
 
@@ -697,9 +635,9 @@ impl VaultService {
                     }
                 }
 
-                ensure_category(document, &category);
+                ensure_name(&mut document.categories, &category, false);
                 for tag in &tags {
-                    ensure_tag(document, tag);
+                    ensure_name(&mut document.tags, tag, true);
                 }
             }
         }
@@ -723,37 +661,22 @@ impl VaultService {
     // ---------- 分类与标签(先建后用)----------
 
     pub fn add_category(&mut self, name: &str) -> Result<()> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(VaultError::Invalid("名称不能为空。".into()));
-        }
-
+        let name = trimmed_name(name)?;
         let document = self.document.as_mut().ok_or(VaultError::Locked)?;
-        if document.categories.iter().any(|c| c.eq_ignore_ascii_case(name)) {
-            return Err(VaultError::Invalid("该分类已存在。".into()));
-        }
+        reject_duplicate(&document.categories, name, "该分类已存在。")?;
         document.categories.push(name.to_string());
         self.commit_in_place()
     }
 
     pub fn rename_category(&mut self, old: &str, new: &str) -> Result<()> {
-        let new = new.trim();
-        if new.is_empty() {
-            return Err(VaultError::Invalid("名称不能为空。".into()));
-        }
+        let new = trimmed_name(new)?;
         if old == new {
             return Ok(());
         }
 
         let document = self.document.as_mut().ok_or(VaultError::Locked)?;
-        if document.categories.iter().any(|c| c.eq_ignore_ascii_case(new)) {
-            return Err(VaultError::Invalid("该分类已存在。".into()));
-        }
-        for category in document.categories.iter_mut() {
-            if category == old {
-                *category = new.to_string();
-            }
-        }
+        reject_duplicate(&document.categories, new, "该分类已存在。")?;
+        rename_in_list(&mut document.categories, old, new);
         for entry in document.entries.iter_mut() {
             if entry.category == old {
                 entry.category = new.to_string();
@@ -775,37 +698,22 @@ impl VaultService {
     }
 
     pub fn add_tag(&mut self, name: &str) -> Result<()> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(VaultError::Invalid("名称不能为空。".into()));
-        }
-
+        let name = trimmed_name(name)?;
         let document = self.document.as_mut().ok_or(VaultError::Locked)?;
-        if document.tags.iter().any(|t| t.eq_ignore_ascii_case(name)) {
-            return Err(VaultError::Invalid("该标签已存在。".into()));
-        }
+        reject_duplicate(&document.tags, name, "该标签已存在。")?;
         document.tags.push(name.to_string());
         self.commit_in_place()
     }
 
     pub fn rename_tag(&mut self, old: &str, new: &str) -> Result<()> {
-        let new = new.trim();
-        if new.is_empty() {
-            return Err(VaultError::Invalid("名称不能为空。".into()));
-        }
+        let new = trimmed_name(new)?;
         if old == new {
             return Ok(());
         }
 
         let document = self.document.as_mut().ok_or(VaultError::Locked)?;
-        if document.tags.iter().any(|t| t.eq_ignore_ascii_case(new)) {
-            return Err(VaultError::Invalid("该标签已存在。".into()));
-        }
-        for tag in document.tags.iter_mut() {
-            if tag == old {
-                *tag = new.to_string();
-            }
-        }
+        reject_duplicate(&document.tags, new, "该标签已存在。")?;
+        rename_in_list(&mut document.tags, old, new);
         for entry in document.entries.iter_mut() {
             for tag in entry.tags.iter_mut() {
                 if tag == old {
@@ -876,6 +784,33 @@ impl VaultService {
     }
 }
 
+/// 密钥槽身份:主密码槽与恢复码槽的结构与加解密路径完全对称。
+#[derive(Clone, Copy)]
+enum Slot {
+    Password,
+    Recovery,
+}
+
+/// 解开一个密钥槽,得到数据密钥(DEK)。
+fn unwrap_slot(secret: &[u8], file: &VaultFile, slot: Slot) -> Result<Zeroizing<Vec<u8>>> {
+    let h = &file.header;
+    let (salt, nonce, wrapped, aad) = match slot {
+        Slot::Password => (
+            h.password_salt,
+            h.password_nonce,
+            &file.password_wrapped,
+            h.password_slot_aad(),
+        ),
+        Slot::Recovery => (
+            h.recovery_salt,
+            h.recovery_nonce,
+            &file.recovery_wrapped,
+            h.recovery_slot_aad(),
+        ),
+    };
+    unwrap_with_secret(secret, &salt, &nonce, wrapped, &aad, h.m_cost_kib, h.t_cost, h.p_cost)
+}
+
 /// 用给定文档重建载荷并原子落盘。
 ///
 /// **不碰 `VaultService::document`** —— 调用方负责在写盘成功之后才提交内存状态:
@@ -918,24 +853,48 @@ fn write_document(file: &mut VaultFile, dek: &[u8], path: &Path, document: &Docu
     Ok(())
 }
 
-fn ensure_category(document: &mut Document, category: &str) {
-    let category = category.trim();
-    if category.is_empty() {
-        return;
+/// 名称校验:去首尾空白,空名称按统一文案报错。返回去空白后的名字。
+fn trimmed_name(name: &str) -> Result<&str> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(VaultError::Invalid("名称不能为空。".into()));
     }
-    if !document.categories.iter().any(|c| c == category) {
-        document.categories.push(category.to_string());
+    Ok(name)
+}
+
+/// 列表里已有同名项(忽略大小写)则按调用方给的文案报错。
+fn reject_duplicate(names: &[String], name: &str, message: &str) -> Result<()> {
+    if names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+        return Err(VaultError::Invalid(message.into()));
+    }
+    Ok(())
+}
+
+/// 把列表里与 `old` 完全相等的项改成 `new`。
+fn rename_in_list(names: &mut [String], old: &str, new: &str) {
+    for name in names.iter_mut() {
+        if name == old {
+            *name = new.to_string();
+        }
     }
 }
 
-/// 与 `add_tag` 保持一致:重名判断忽略大小写。
-fn ensure_tag(document: &mut Document, tag: &str) {
-    let tag = tag.trim();
-    if tag.is_empty() {
+/// 确保名称在列表里(导入时补建;去空白、空名忽略)。
+///
+/// `case_insensitive` 由调用方给出:分类区分大小写、标签忽略大小写 ——
+/// 两者口径不一致是既有行为(与各自 `add_*` 的判定也未必相同),原样保留。
+fn ensure_name(list: &mut Vec<String>, name: &str, case_insensitive: bool) {
+    let name = name.trim();
+    if name.is_empty() {
         return;
     }
-    if !document.tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
-        document.tags.push(tag.to_string());
+    let exists = if case_insensitive {
+        list.iter().any(|n| n.eq_ignore_ascii_case(name))
+    } else {
+        list.iter().any(|n| n == name)
+    };
+    if !exists {
+        list.push(name.to_string());
     }
 }
 

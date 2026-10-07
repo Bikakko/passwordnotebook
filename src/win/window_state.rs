@@ -7,8 +7,6 @@
 //! 那时库还读不到。放注册表才能做到"打开就是上次的样子",且**不在磁盘上产生文件**。
 //! 窗口形状不是秘密,这里也不涉及任何敏感信息。
 
-use std::ffi::c_void;
-
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Registry::{
@@ -141,7 +139,3 @@ pub fn restore(hwnd: HWND, placement: &WINDOWPLACEMENT) -> bool {
     placement.length = placement_size() as u32;
     unsafe { SetWindowPlacement(hwnd, &placement).is_ok() }
 }
-
-/// 让 `c_void` 的导入不被判为未使用(本模块只用类型名)。
-#[allow(dead_code)]
-type UnusedPtr = *mut c_void;

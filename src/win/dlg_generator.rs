@@ -79,7 +79,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             LRESULT(0)
         }
         WM_COMMAND => {
-            on_command(hwnd, (wparam.0 & 0xFFFF) as usize, ((wparam.0 >> 16) & 0xFFFF) as u16);
+            let (id, code) = dialog::command_params(wparam);
+            on_command(hwnd, id, code);
             LRESULT(0)
         }
         WM_CLOSE => {
@@ -91,10 +92,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 }
 
 fn on_create(hwnd: HWND, lparam: LPARAM) {
-    let ptr = unsafe { ui::create_param(lparam) } as *mut GenState;
-    ui::set_user_data(hwnd, ptr as *mut std::ffi::c_void);
+    unsafe { ui::attach_state::<GenState>(hwnd, lparam) };
 
     let s = st(hwnd);
+    // 长度默认值与各复选框的默认勾选都从核心的 `Options::default()` 来。
+    let defaults = Options::default();
     s.output = ctl(
         "EDIT",
         "",
@@ -107,7 +109,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     ctl("STATIC", "长度", SS_LEFT, 0, hwnd, ID_LENGTH_LABEL, (20, 66, 40, 22));
     s.length = ctl(
         "EDIT",
-        "20",
+        &defaults.length.to_string(),
         WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL,
         WS_EX_CLIENTEDGE,
         hwnd,
@@ -116,7 +118,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     );
     ctl(
         "STATIC",
-        "（4 – 256）",
+        &format!("（{} – {}）", generator::MIN_LENGTH, generator::MAX_LENGTH),
         SS_LEFT,
         0,
         hwnd,
@@ -138,16 +140,14 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
         (20, 218, 300, 24),
     );
 
-    for (id, checked) in [
-        (ID_UPPER, true),
-        (ID_LOWER, true),
-        (ID_DIGITS, true),
-        (ID_SYMBOLS, true),
-        (ID_NOAMB, true),
+    for (control, checked) in [
+        (s.upper, defaults.upper),
+        (s.lower, defaults.lower),
+        (s.digits, defaults.digits),
+        (s.symbols, defaults.symbols),
+        (s.no_ambiguous, defaults.exclude_ambiguous),
     ] {
-        if let Ok(control) = unsafe { windows::Win32::UI::WindowsAndMessaging::GetDlgItem(Some(hwnd), id as i32) } {
-            ui::set_checked(control, checked);
-        }
+        ui::set_checked(control, checked);
     }
 
     let use_style = if s.use_button {
@@ -207,8 +207,8 @@ fn regenerate(hwnd: HWND) {
     let length: usize = ui::get_text(s.length)
         .trim()
         .parse()
-        .unwrap_or(20)
-        .clamp(4, 256);
+        .unwrap_or(generator::DEFAULT_LENGTH)
+        .clamp(generator::MIN_LENGTH, generator::MAX_LENGTH);
 
     let options = Options {
         length,

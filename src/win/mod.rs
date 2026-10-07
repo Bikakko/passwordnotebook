@@ -80,16 +80,8 @@ pub fn run() -> i32 {
         return selftest::run();
     }
 
-    if selftest::preview_requested() {
-        return selftest::preview();
-    }
-
-    if selftest::preview_recovery_requested() {
-        return selftest::preview_recovery();
-    }
-
-    if selftest::preview_transfer_requested() {
-        return selftest::preview_transfer();
+    if let Some(exit_code) = selftest::preview_mode() {
+        return exit_code;
     }
 
     // 单实例:第二次启动时把已有窗口拉到前台,避免两个进程同时占着密码本文件。

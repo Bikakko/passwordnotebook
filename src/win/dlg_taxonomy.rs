@@ -33,6 +33,68 @@ struct Column {
     list: HWND,
 }
 
+/// 两列的控件 id 组(建列与命令分派共用)。
+#[derive(Clone, Copy)]
+struct ColumnIds {
+    label: usize,
+    input: usize,
+    list: usize,
+    add: usize,
+    rename: usize,
+    delete: usize,
+}
+
+const CATEGORY_IDS: ColumnIds = ColumnIds {
+    label: ID_CAT_LABEL,
+    input: ID_CAT_INPUT,
+    list: ID_CAT_LIST,
+    add: ID_CAT_ADD,
+    rename: ID_CAT_RENAME,
+    delete: ID_CAT_DELETE,
+};
+
+const TAG_IDS: ColumnIds = ColumnIds {
+    label: ID_TAG_LABEL,
+    input: ID_TAG_INPUT,
+    list: ID_TAG_LIST,
+    add: ID_TAG_ADD,
+    rename: ID_TAG_RENAME,
+    delete: ID_TAG_DELETE,
+};
+
+/// 列的操作目标:分类或标签。
+#[derive(Clone, Copy)]
+enum Target {
+    Categories,
+    Tags,
+}
+
+impl Target {
+    /// 列名(错误提示用)。
+    fn noun(self) -> &'static str {
+        match self {
+            Target::Categories => "分类",
+            Target::Tags => "标签",
+        }
+    }
+
+    /// 该列在状态里的句柄组。
+    fn column(self, s: &TaxonomyState) -> &Column {
+        match self {
+            Target::Categories => &s.categories,
+            Target::Tags => &s.tags,
+        }
+    }
+}
+
+/// 列上的按钮动作。
+#[derive(Clone, Copy)]
+enum Action {
+    Add,
+    Rename,
+    Delete,
+}
+
 struct TaxonomyState {
     categories: Column,
     tags: Column,
@@ -65,7 +127,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             LRESULT(0)
         }
         WM_COMMAND => {
-            on_command(hwnd, (wparam.0 & 0xFFFF) as usize, ((wparam.0 >> 16) & 0xFFFF) as u16);
+            let (id, code) = dialog::command_params(wparam);
+            on_command(hwnd, id, code);
             LRESULT(0)
         }
         WM_CLOSE => {
@@ -77,8 +140,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 }
 
 fn on_create(hwnd: HWND, lparam: LPARAM) {
-    let ptr = unsafe { ui::create_param(lparam) } as *mut TaxonomyState;
-    ui::set_user_data(hwnd, ptr as *mut std::ffi::c_void);
+    unsafe { ui::attach_state::<TaxonomyState>(hwnd, lparam) };
     let s = st(hwnd);
 
     ctl(
@@ -91,53 +153,9 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
         (20, 14, 590, 40),
     );
 
-    // ---- 分类列 ----
-    ctl("STATIC", "分类", SS_LEFT, 0, hwnd, ID_CAT_LABEL, (20, 62, 100, 22));
-    s.categories.input = ctl(
-        "EDIT",
-        "",
-        WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL,
-        WS_EX_CLIENTEDGE,
-        hwnd,
-        ID_CAT_INPUT,
-        (20, 86, 280, 30),
-    );
-    s.categories.list = ctl(
-        "LISTBOX",
-        "",
-        WS_BORDER | WS_VSCROLL | WS_TABSTOP | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
-        0,
-        hwnd,
-        ID_CAT_LIST,
-        (20, 126, 280, 230),
-    );
-    ctl("BUTTON", "添加", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CAT_ADD, (20, 366, 86, 36));
-    ctl("BUTTON", "重命名", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CAT_RENAME, (114, 366, 92, 36));
-    ctl("BUTTON", "删除", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CAT_DELETE, (214, 366, 86, 36));
-
-    // ---- 标签列 ----
-    ctl("STATIC", "标签", SS_LEFT, 0, hwnd, ID_TAG_LABEL, (330, 62, 100, 22));
-    s.tags.input = ctl(
-        "EDIT",
-        "",
-        WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL,
-        WS_EX_CLIENTEDGE,
-        hwnd,
-        ID_TAG_INPUT,
-        (330, 86, 280, 30),
-    );
-    s.tags.list = ctl(
-        "LISTBOX",
-        "",
-        WS_BORDER | WS_VSCROLL | WS_TABSTOP | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
-        0,
-        hwnd,
-        ID_TAG_LIST,
-        (330, 126, 280, 230),
-    );
-    ctl("BUTTON", "添加", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_TAG_ADD, (330, 366, 86, 36));
-    ctl("BUTTON", "重命名", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_TAG_RENAME, (424, 366, 92, 36));
-    ctl("BUTTON", "删除", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_TAG_DELETE, (524, 366, 86, 36));
+    // ---- 分类列 / 标签列(同一套布局,整体右移一列宽)----
+    s.categories = create_column(hwnd, 20, "分类", CATEGORY_IDS);
+    s.tags = create_column(hwnd, 330, "标签", TAG_IDS);
 
     s.error = ctl("STATIC", "", SS_LEFT, 0, hwnd, ID_ERROR, (20, 410, 460, 40));
     ctl("BUTTON", "关闭", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, hwnd, ID_CLOSE, (510, 462, 110, 36));
@@ -162,14 +180,75 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
 fn refresh(hwnd: HWND) {
     let s = st(hwnd);
 
-    ui::listbox_clear(s.categories.list);
-    for name in app::state().vault.known_categories() {
-        ui::listbox_add(s.categories.list, &name);
-    }
+    fill_column(&s.categories, app::state().vault.known_categories());
+    fill_column(&s.tags, app::state().vault.known_tags());
+}
 
-    ui::listbox_clear(s.tags.list);
-    for name in app::state().vault.known_tags() {
-        ui::listbox_add(s.tags.list, &name);
+/// 建一列:标题 + 输入框 + 列表 + 添加/重命名/删除按钮;`x` 为列左缘(96 DPI)。
+fn create_column(hwnd: HWND, x: i32, title: &str, ids: ColumnIds) -> Column {
+    ctl("STATIC", title, SS_LEFT, 0, hwnd, ids.label, (x, 62, 100, 22));
+    let input = ctl(
+        "EDIT",
+        "",
+        WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL,
+        WS_EX_CLIENTEDGE,
+        hwnd,
+        ids.input,
+        (x, 86, 280, 30),
+    );
+    let list = ctl(
+        "LISTBOX",
+        "",
+        WS_BORDER | WS_VSCROLL | WS_TABSTOP | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
+        0,
+        hwnd,
+        ids.list,
+        (x, 126, 280, 230),
+    );
+    ctl("BUTTON", "添加", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ids.add, (x, 366, 86, 36));
+    ctl("BUTTON", "重命名", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ids.rename, (x + 94, 366, 92, 36));
+    ctl("BUTTON", "删除", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ids.delete, (x + 194, 366, 86, 36));
+    Column { input, list }
+}
+
+/// 按钮 id → (目标列, 动作);非操作按钮返回 `None`。
+fn split_id(id: usize) -> Option<(Target, Action)> {
+    match id {
+        ID_CAT_ADD => Some((Target::Categories, Action::Add)),
+        ID_CAT_RENAME => Some((Target::Categories, Action::Rename)),
+        ID_CAT_DELETE => Some((Target::Categories, Action::Delete)),
+        ID_TAG_ADD => Some((Target::Tags, Action::Add)),
+        ID_TAG_RENAME => Some((Target::Tags, Action::Rename)),
+        ID_TAG_DELETE => Some((Target::Tags, Action::Delete)),
+        _ => None,
+    }
+}
+
+/// 列表 id → 所属列(选中联动输入框用)。
+fn list_target(id: usize) -> Option<Target> {
+    match id {
+        ID_CAT_LIST => Some(Target::Categories),
+        ID_TAG_LIST => Some(Target::Tags),
+        _ => None,
+    }
+}
+
+/// 当前列表选中项;未选中时给出「请先选中要…的…」提示并返回 `None`。
+fn selected_name(s: &TaxonomyState, target: Target, verb: &str) -> Option<String> {
+    let column = target.column(s);
+    let index = ui::listbox_index(column.list);
+    if index < 0 {
+        ui::set_text(s.error, &format!("请先选中要{verb}的{}。", target.noun()));
+        return None;
+    }
+    Some(ui::listbox_text(column.list, index))
+}
+
+/// 重建一列的列表内容。
+fn fill_column(column: &Column, names: Vec<String>) {
+    ui::listbox_clear(column.list);
+    for name in &names {
+        ui::listbox_add(column.list, name);
     }
 }
 
@@ -178,14 +257,13 @@ fn on_command(hwnd: HWND, id: usize, code: u16) {
 
     // 选中某项时把它填进输入框,方便直接改名。
     if code == LBN_SELCHANGE {
-        let (list, input) = match id {
-            ID_CAT_LIST => (s.categories.list, s.categories.input),
-            ID_TAG_LIST => (s.tags.list, s.tags.input),
-            _ => return,
+        let Some(target) = list_target(id) else {
+            return;
         };
-        let index = ui::listbox_index(list);
+        let column = target.column(s);
+        let index = ui::listbox_index(column.list);
         if index >= 0 {
-            ui::set_text(input, &ui::listbox_text(list, index));
+            ui::set_text(column.input, &ui::listbox_text(column.list, index));
         }
         return;
     }
@@ -194,58 +272,43 @@ fn on_command(hwnd: HWND, id: usize, code: u16) {
         return;
     }
 
-    let result = match id {
-        ID_CAT_ADD => {
-            let name = ui::get_text(s.categories.input);
-            app::state().vault.add_category(&name)
-        }
-        ID_CAT_RENAME => {
-            let index = ui::listbox_index(s.categories.list);
-            if index < 0 {
-                ui::set_text(s.error, "请先选中要重命名的分类。");
-                return;
-            }
-            let old = ui::listbox_text(s.categories.list, index);
-            let new = ui::get_text(s.categories.input);
-            app::state().vault.rename_category(&old, &new)
-        }
-        ID_CAT_DELETE => {
-            let index = ui::listbox_index(s.categories.list);
-            if index < 0 {
-                ui::set_text(s.error, "请先选中要删除的分类。");
-                return;
-            }
-            let name = ui::listbox_text(s.categories.list, index);
-            app::state().vault.remove_category(&name)
-        }
-        ID_TAG_ADD => {
-            let name = ui::get_text(s.tags.input);
-            app::state().vault.add_tag(&name)
-        }
-        ID_TAG_RENAME => {
-            let index = ui::listbox_index(s.tags.list);
-            if index < 0 {
-                ui::set_text(s.error, "请先选中要重命名的标签。");
-                return;
-            }
-            let old = ui::listbox_text(s.tags.list, index);
-            let new = ui::get_text(s.tags.input);
-            app::state().vault.rename_tag(&old, &new)
-        }
-        ID_TAG_DELETE => {
-            let index = ui::listbox_index(s.tags.list);
-            if index < 0 {
-                ui::set_text(s.error, "请先选中要删除的标签。");
-                return;
-            }
-            let name = ui::listbox_text(s.tags.list, index);
-            app::state().vault.remove_tag(&name)
-        }
-        ID_CLOSE => {
+    let Some((target, action)) = split_id(id) else {
+        if id == ID_CLOSE {
             ui::destroy_window(hwnd);
-            return;
         }
-        _ => return,
+        return;
+    };
+
+    let column = target.column(s);
+    let name = ui::get_text(column.input);
+
+    let result = match (action, target) {
+        (Action::Add, Target::Categories) => app::state().vault.add_category(&name),
+        (Action::Add, Target::Tags) => app::state().vault.add_tag(&name),
+        (Action::Rename, Target::Categories) => {
+            let Some(old) = selected_name(s, target, "重命名") else {
+                return;
+            };
+            app::state().vault.rename_category(&old, &name)
+        }
+        (Action::Rename, Target::Tags) => {
+            let Some(old) = selected_name(s, target, "重命名") else {
+                return;
+            };
+            app::state().vault.rename_tag(&old, &name)
+        }
+        (Action::Delete, Target::Categories) => {
+            let Some(old) = selected_name(s, target, "删除") else {
+                return;
+            };
+            app::state().vault.remove_category(&old)
+        }
+        (Action::Delete, Target::Tags) => {
+            let Some(old) = selected_name(s, target, "删除") else {
+                return;
+            };
+            app::state().vault.remove_tag(&old)
+        }
     };
 
     match result {

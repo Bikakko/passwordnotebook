@@ -205,8 +205,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             LRESULT(0)
         }
         WM_COMMAND => {
-            let id = (wparam.0 & 0xFFFF) as usize;
-            let code = ((wparam.0 >> 16) & 0xFFFF) as u16;
+            let (id, code) = dialog::command_params(wparam);
             main_ui::on_command(hwnd, id, code);
             LRESULT(0)
         }
@@ -248,7 +247,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             LRESULT(0)
         }
         WM_DESTROY => {
-            main_ui::on_destroy();
+            main_ui::on_destroy(hwnd);
             unsafe {
                 PostQuitMessage(0);
             }

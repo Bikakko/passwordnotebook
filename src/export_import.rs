@@ -97,6 +97,14 @@ pub enum Format {
 }
 
 impl Format {
+    /// 下拉框里的呈现顺序:填充与解析共用这一份,不会各写一遍再对不上。
+    pub const ALL: [Format; 2] = [Format::Csv, Format::Json];
+
+    /// 下拉框下标 → 格式。未知值按 CSV。
+    pub fn from_combo(index: i32) -> Self {
+        Self::ALL.get(index.max(0) as usize).copied().unwrap_or(Format::Csv)
+    }
+
     /// 文件扩展名(不含点)。
     pub fn extension(self) -> &'static str {
         match self {
@@ -150,6 +158,21 @@ pub enum DuplicateStrategy {
 }
 
 impl DuplicateStrategy {
+    /// 下拉框里的呈现顺序:跳过 / 覆盖 / 全部新增。
+    pub const ALL: [DuplicateStrategy; 3] = [
+        DuplicateStrategy::Skip,
+        DuplicateStrategy::Overwrite,
+        DuplicateStrategy::Append,
+    ];
+
+    /// 下拉框下标 → 重复项处理方式。未知值按「跳过重复项」。
+    pub fn from_combo(index: i32) -> Self {
+        Self::ALL
+            .get(index.max(0) as usize)
+            .copied()
+            .unwrap_or(DuplicateStrategy::Skip)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             DuplicateStrategy::Append => "全部新增",
@@ -171,10 +194,6 @@ impl ImportOutcome {
     /// 是否真的改动了库(没改动就不必落盘)。
     pub fn changed(&self) -> bool {
         self.added + self.updated > 0
-    }
-
-    pub fn total(&self) -> usize {
-        self.added + self.updated + self.skipped
     }
 
     /// 面向用户的一句话总结。
@@ -609,9 +628,74 @@ fn is_own_export(text: &str, raw_header: &[String]) -> bool {
         })
 }
 
+/// 一个字段的原始值:CSV 是单元格文本,JSON 还可能是布尔 / 数字 / 数组(标签)。
+enum FieldValue<'a> {
+    Text(String),
+    Bool(bool),
+    Number(&'a serde_json::Number),
+    List(&'a [Value]),
+}
+
+impl FieldValue<'_> {
+    /// 归一成文本(数组与空值给出空串,与旧的 JSON 解析行为一致)。
+    fn text(self) -> String {
+        match self {
+            FieldValue::Text(s) => s,
+            FieldValue::Bool(b) => b.to_string(),
+            FieldValue::Number(n) => n.to_string(),
+            FieldValue::List(_) => String::new(),
+        }
+    }
+
+    /// 真值:布尔与数字直接判定,其余按文本(兼容 `1`/`yes`/`是` 等写法)。
+    /// 认不出来的一律当「否」——收藏不是关键数据,宁可漏掉也不要误判。
+    fn truthy(self) -> bool {
+        match self {
+            FieldValue::Bool(b) => b,
+            FieldValue::Number(n) => n.as_i64().is_some_and(|i| i != 0),
+            other => truthy(&other.text()),
+        }
+    }
+}
+
+/// 把一个字段装进条目。CSV 与 JSON 两个入口把原始值归一成 [`FieldValue`] 后走这里,
+/// 字段语义只在这一处定义,不会两边各写一份再慢慢走样。
+fn apply_field(entry: &mut Entry, field: Field, value: FieldValue<'_>) {
+    match field {
+        Field::Id => entry.id = value.text().trim().to_string(),
+        Field::Title => entry.title = value.text(),
+        Field::Username => entry.username = value.text(),
+        Field::Password => entry.password = Zeroizing::new(value.text()),
+        Field::Url => entry.url = value.text(),
+        Field::ApiKey => entry.api_key = Zeroizing::new(value.text()),
+        Field::ApiEndpoint => entry.api_endpoint = value.text(),
+        Field::Category => entry.category = value.text(),
+        Field::Tags => match value {
+            FieldValue::List(items) => {
+                for item in items {
+                    push_tags(&mut entry.tags, &as_string(item));
+                }
+            }
+            other => push_tags(&mut entry.tags, &other.text()),
+        },
+        Field::Favorite => entry.favorite = value.truthy(),
+        Field::Notes => entry.notes = value.text(),
+        Field::Created => entry.created = parse_timestamp(&value.text()),
+        Field::Updated => entry.updated = parse_timestamp(&value.text()),
+    }
+}
+
+/// 拆分一段标签文本,去重地并入列表(跨数组元素、跨同名列之间都去重)。
+fn push_tags(out: &mut Vec<String>, value: &str) {
+    for tag in split_tags(value) {
+        if !out.iter().any(|t| t.eq_ignore_ascii_case(&tag)) {
+            out.push(tag);
+        }
+    }
+}
+
 fn entry_from_row(header: &[Option<Field>], record: &[String], unguard: bool) -> Entry {
     let mut entry = Entry::default();
-    let mut tags: Vec<String> = Vec::new();
 
     for (index, field) in header.iter().enumerate() {
         let Some(field) = field else { continue };
@@ -622,24 +706,9 @@ fn entry_from_row(header: &[Option<Field>], record: &[String], unguard: bool) ->
         } else {
             raw.to_string()
         };
-        match field {
-            Field::Id => entry.id = value.trim().to_string(),
-            Field::Title => entry.title = value,
-            Field::Username => entry.username = value,
-            Field::Password => entry.password = Zeroizing::new(value),
-            Field::Url => entry.url = value,
-            Field::ApiKey => entry.api_key = Zeroizing::new(value),
-            Field::ApiEndpoint => entry.api_endpoint = value,
-            Field::Category => entry.category = value,
-            Field::Tags => tags.extend(split_tags(&value)),
-            Field::Favorite => entry.favorite = truthy(&value),
-            Field::Notes => entry.notes = value,
-            Field::Created => entry.created = parse_timestamp(&value),
-            Field::Updated => entry.updated = parse_timestamp(&value),
-        }
+        apply_field(&mut entry, *field, FieldValue::Text(value));
     }
 
-    entry.tags = tags;
     entry
 }
 
@@ -785,52 +854,25 @@ fn parse_json(text: &str) -> Result<Vec<Entry>> {
     Ok(out)
 }
 
+/// JSON 值 → [`FieldValue`]:布尔 / 数字 / 数组各有形态,其余按文本处理。
+fn json_field_value(value: &Value) -> FieldValue<'_> {
+    match value {
+        Value::Bool(b) => FieldValue::Bool(*b),
+        Value::Number(n) => FieldValue::Number(n),
+        Value::Array(items) => FieldValue::List(items),
+        other => FieldValue::Text(as_string(other)),
+    }
+}
+
 fn entry_from_object(map: &Map<String, Value>) -> Entry {
     let mut entry = Entry::default();
-    let mut tags: Vec<String> = Vec::new();
 
     for (key, value) in map {
         let Some(field) = field_from_key(key) else { continue };
-        match field {
-            Field::Id => entry.id = as_string(value),
-            Field::Title => entry.title = as_string(value),
-            Field::Username => entry.username = as_string(value),
-            Field::Password => entry.password = Zeroizing::new(as_string(value)),
-            Field::Url => entry.url = as_string(value),
-            Field::ApiKey => entry.api_key = Zeroizing::new(as_string(value)),
-            Field::ApiEndpoint => entry.api_endpoint = as_string(value),
-            Field::Category => entry.category = as_string(value),
-            Field::Tags => match value {
-                Value::Array(items) => {
-                    for item in items {
-                        for tag in split_tags(&as_string(item)) {
-                            if !tags.iter().any(|t| t.eq_ignore_ascii_case(&tag)) {
-                                tags.push(tag);
-                            }
-                        }
-                    }
-                }
-                other => tags.extend(split_tags(&as_string(other))),
-            },
-            Field::Favorite => entry.favorite = as_bool(value),
-            Field::Notes => entry.notes = as_string(value),
-            Field::Created => entry.created = parse_timestamp(&as_string(value)),
-            Field::Updated => entry.updated = parse_timestamp(&as_string(value)),
-        }
+        apply_field(&mut entry, field, json_field_value(value));
     }
 
-    entry.tags = tags;
     entry
-}
-
-/// 真值解析:兼容 JSON 布尔与 Bitwarden 的 `1`/`0`,以及 `yes`/`是` 这类写法。
-/// 认不出来的一律当「否」——收藏不是关键数据,宁可漏掉也不要误判。
-fn as_bool(value: &Value) -> bool {
-    match value {
-        Value::Bool(b) => *b,
-        Value::Number(n) => n.as_i64().is_some_and(|i| i != 0),
-        other => truthy(&as_string(other)),
-    }
 }
 
 /// 文本形式的真值(CSV 单元格与 JSON 字符串共用)。
@@ -872,38 +914,42 @@ pub(crate) fn dedupe_key(entry: &Entry) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// 导出/导入往返的期望值:(标题, 密码, 网址, 分类, 备注, 标签, API 密钥, API 端点)。
+    type ExpectedRow = (String, String, String, String, String, String, String, String);
+
     fn sample_document() -> Document {
-        let mut document = Document::default();
-        document.categories = vec!["工作".into()];
-        document.tags = vec!["重要".into()];
-        document.entries = vec![
-            Entry {
-                title: "带,逗号".into(),
-                username: "a\"b".into(),
-                password: Zeroizing::new("p,w\"d\n换行".into()),
-                url: "https://example.com".into(),
-                api_key: Zeroizing::new("sk-abc".into()),
-                api_endpoint: "https://api.example.com/v1".into(),
-                category: "工作".into(),
-                tags: vec!["重要".into(), "内部".into()],
-                notes: "第一行\n第二行".into(),
-                created: 100,
-                updated: 200,
-                ..Default::default()
-            },
-            Entry {
-                title: "另一个".into(),
-                username: "user".into(),
-                password: Zeroizing::new("secret".into()),
-                ..Default::default()
-            },
-            Entry {
-                title: "在回收站里".into(),
-                deleted: Some(1),
-                ..Default::default()
-            },
-        ];
-        document
+        Document {
+            categories: vec!["工作".into()],
+            tags: vec!["重要".into()],
+            entries: vec![
+                Entry {
+                    title: "带,逗号".into(),
+                    username: "a\"b".into(),
+                    password: Zeroizing::new("p,w\"d\n换行".into()),
+                    url: "https://example.com".into(),
+                    api_key: Zeroizing::new("sk-abc".into()),
+                    api_endpoint: "https://api.example.com/v1".into(),
+                    category: "工作".into(),
+                    tags: vec!["重要".into(), "内部".into()],
+                    notes: "第一行\n第二行".into(),
+                    created: 100,
+                    updated: 200,
+                    ..Default::default()
+                },
+                Entry {
+                    title: "另一个".into(),
+                    username: "user".into(),
+                    password: Zeroizing::new("secret".into()),
+                    ..Default::default()
+                },
+                Entry {
+                    title: "在回收站里".into(),
+                    deleted: Some(1),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -963,13 +1009,15 @@ mod tests {
 
     #[test]
     fn formula_prefixes_are_guarded_and_listed() {
-        let mut document = Document::default();
-        document.entries = vec![Entry {
-            title: "=cmd|'/C calc'!A1".into(),
-            username: "@SUM(1)".into(),
-            password: Zeroizing::new("-2+3".into()),
+        let document = Document {
+            entries: vec![Entry {
+                title: "=cmd|'/C calc'!A1".into(),
+                username: "@SUM(1)".into(),
+                password: Zeroizing::new("-2+3".into()),
+                ..Default::default()
+            }],
             ..Default::default()
-        }];
+        };
 
         let text = export_csv(&document, ExportOptions::default());
         assert!(text.contains("'=cmd"));
@@ -1209,8 +1257,7 @@ mod tests {
         };
 
         let mut document = Document::default();
-        let mut expected: Vec<(String, String, String, String, String, String, String, String)> =
-            Vec::new();
+        let mut expected: Vec<ExpectedRow> = Vec::new();
         for index in 0..300 {
             let title = random_field();
             let password = random_field();
@@ -1437,18 +1484,26 @@ mod tests {
 
     #[test]
     fn dedupe_key_ignores_case_and_falls_back_to_url() {
-        let mut a = Entry::default();
-        a.title = " GitHub ".into();
-        a.username = "Me".into();
-        let mut b = Entry::default();
-        b.title = "github".into();
-        b.username = "me".into();
+        let a = Entry {
+            title: " GitHub ".into(),
+            username: "Me".into(),
+            ..Default::default()
+        };
+        let b = Entry {
+            title: "github".into(),
+            username: "me".into(),
+            ..Default::default()
+        };
         assert_eq!(dedupe_key(&a), dedupe_key(&b));
 
-        let mut c = Entry::default();
-        c.url = "https://Only-Url.example".into();
-        let mut d = Entry::default();
-        d.url = "https://only-url.example".into();
+        let c = Entry {
+            url: "https://Only-Url.example".into(),
+            ..Default::default()
+        };
+        let d = Entry {
+            url: "https://only-url.example".into(),
+            ..Default::default()
+        };
         assert_eq!(dedupe_key(&c), dedupe_key(&d));
 
         assert_eq!(dedupe_key(&Entry::default()), None);
