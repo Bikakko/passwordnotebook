@@ -32,6 +32,8 @@ pub const ERROR_TEXT: u32 = 0x002B_39C0;
 pub const MUTED_TEXT: u32 = 0x00A1_9E99;
 /// 列表网格线(RGB 197, 202, 211)。
 pub const GRIDLINE: u32 = 0x00D3_CAC5;
+/// 列表列头的背景色(浅灰,与白色内容行区分)。
+pub const HEADER_BG: u32 = 0x00EC_ECEC;
 
 // 自绘分类页签。
 pub const STRIP_BG: u32 = 0x00F5_F5F5; // #F5F5F5 未选中的底色

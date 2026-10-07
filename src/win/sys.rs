@@ -70,6 +70,7 @@ pub const WM_ERASEBKGND: u32 = 0x0014;
 pub const WM_GETMINMAXINFO: u32 = 0x0024;
 pub const WM_CTLCOLORSTATIC: u32 = 0x0138;
 pub const WM_SETFONT: u32 = 0x0030;
+pub const WM_GETFONT: u32 = 0x0031;
 pub const WM_COMMAND: u32 = 0x0111;
 pub const WM_CONTEXTMENU: u32 = 0x007B;
 pub const LVM_HITTEST: u32 = LVM_FIRST + 18;
@@ -143,8 +144,11 @@ pub const TSM_TAB_CHANGED: u32 = WM_APP + 1;
 pub const TSM_COLUMN_RESIZED: u32 = WM_APP + 2;
 pub const TCS_MULTILINE: u32 = 0x0200;
 pub const DT_CENTER: u32 = 0x0001;
+pub const DT_RIGHT: u32 = 0x0002;
 pub const DT_VCENTER: u32 = 0x0004;
+pub const DT_LEFT: u32 = 0x0000_0000;
 pub const DT_SINGLELINE: u32 = 0x0020;
+pub const DT_END_ELLIPSIS: u32 = 0x0000_8000;
 
 // 注意:LVCOLUMNW / LVITEMW 的位标志字段是 `windows` crate 的新类型,
 // 因此 LVCF_* / LVIF_* / LVIS_* 一律使用 crate 里的常量,这里不再重复定义。
@@ -153,6 +157,10 @@ pub const NM_CUSTOMDRAW: i32 = -12;
 pub const NM_DBLCLK: i32 = -3;
 /// 虚拟列表绘制时向父窗口索取某行某列的文本(= LVN_FIRST - 77)。
 pub const LVN_GETDISPINFOW: i32 = -177;
+
+// ---------- 列表头控件(Header) ----------
+/// 取列头某一列的文本与格式(HDM_FIRST + 11)。
+pub const HDM_GETITEMW: u32 = 0x120B;
 
 // ---------- 列表头控件(Header)通知 ----------
 pub const HDN_DIVIDERDBLCLICKA: i32 = -305;

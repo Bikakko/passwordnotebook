@@ -193,6 +193,8 @@ pub struct MainUi {
     category_names: Vec<String>,
     /// 网格线画刷:建一次用到底,不在自定义绘制里每行现建现删。
     grid_brush: HBRUSH,
+    /// 列头背景画刷(列头自绘用)。
+    header_brush: HBRUSH,
     /// 网格线的列宽缓存:每个绘制周期由自定义绘制的预绘制阶段量一次。
     grid_columns: Vec<i32>,
     /// 主列表每行的显示单元格(与 `rows` 同序)。
@@ -268,6 +270,7 @@ impl MainUi {
             bin_rows: Vec::new(),
             category_names: Vec::new(),
             grid_brush: HBRUSH::default(),
+            header_brush: HBRUSH::default(),
             grid_columns: Vec::new(),
             row_cells: Vec::new(),
             bin_row_cells: Vec::new(),
@@ -514,8 +517,9 @@ pub fn on_create(hwnd: HWND, lparam: LPARAM) {
 
     init_list(s.bin_list, BIN_LIST_COLUMNS);
 
-    // 网格线画刷是固定色的 GDI 对象:建一次用到底。
+    // 网格线与列头画刷是固定色的 GDI 对象:建一次用到底。
     s.grid_brush = ui::create_solid_brush(GRIDLINE);
+    s.header_brush = ui::create_solid_brush(HEADER_BG);
 
     ui::combo_add(s.sort_combo, "更新时间");
     ui::combo_add(s.sort_combo, "标题");
@@ -1324,6 +1328,56 @@ pub fn on_notify(hwnd: HWND, lparam: LPARAM) -> isize {
             return CDRF_DODEFAULT as isize;
         }
         return CDRF_DODEFAULT as isize;
+    }
+
+    // 列头自绘:浅灰底 + 深色标题(系统主题的列头接近白色,与内容行区分不开)。
+    // 列头的 NM_CUSTOMDRAW 与 HDN_* 一样由列表视图转发到父窗口。
+    if code == NM_CUSTOMDRAW && header.hwndFrom != list && header.hwndFrom != bin_list {
+        let list_header = ui::listview_get_header(list);
+        let bin_header = ui::listview_get_header(bin_list);
+        if header.hwndFrom == list_header || header.hwndFrom == bin_header {
+            use windows::Win32::Graphics::Gdi::FillRect;
+            use windows::Win32::UI::Controls::{
+                CDDS_ITEMPREPAINT, CDDS_PREPAINT, CDRF_DODEFAULT, CDRF_NOTIFYITEMDRAW,
+                CDRF_SKIPDEFAULT, NMCUSTOMDRAW,
+            };
+
+            let nmcd = unsafe { &*(lparam.0 as *const NMCUSTOMDRAW) };
+            if nmcd.dwDrawStage == CDDS_PREPAINT {
+                return CDRF_NOTIFYITEMDRAW as isize;
+            }
+            if nmcd.dwDrawStage == CDDS_ITEMPREPAINT {
+                let s = st(hwnd);
+                ui::draw_header_item(
+                    header.hwndFrom,
+                    nmcd.hdc,
+                    &nmcd.rc,
+                    nmcd.dwItemSpec as i32,
+                    s.header_brush,
+                    s.grid_brush,
+                );
+                // 最后一列右侧常有几像素留白(列宽总和略窄于控件),也铺上灰底。
+                let col_count = if header.hwndFrom == bin_header {
+                    BIN_LIST_COLUMNS.len()
+                } else {
+                    MAIN_LIST_COLUMNS.len()
+                };
+                if nmcd.dwItemSpec + 1 == col_count {
+                    let (client_w, _) = ui::client_size(header.hwndFrom);
+                    let tail = RECT {
+                        left: nmcd.rc.right,
+                        top: nmcd.rc.top,
+                        right: client_w,
+                        bottom: nmcd.rc.bottom,
+                    };
+                    unsafe {
+                        FillRect(nmcd.hdc, &tail, s.header_brush);
+                    }
+                }
+                return CDRF_SKIPDEFAULT as isize;
+            }
+            return CDRF_DODEFAULT as isize;
+        }
     }
 
     // 虚拟列表:控件按需索取某行某列的文本(列表建出来时带了 LVS_OWNERDATA)。
@@ -2351,10 +2405,11 @@ pub fn confirm_exit(hwnd: HWND) -> bool {
     true
 }
 
-/// 窗口销毁时:回收窗口期建的 GDI 对象(网格线画刷),并抹掉内存中的密钥。
+/// 窗口销毁时:回收窗口期建的 GDI 对象(画刷),并抹掉内存中的密钥。
 /// **不要**清 DPAPI 缓存 —— 那样下次启动就需要重新输入登录密码,
 /// 而设计目标是「屏保前保持免密」。
 pub fn on_destroy(hwnd: HWND) {
     ui::delete_brush(st(hwnd).grid_brush);
+    ui::delete_brush(st(hwnd).header_brush);
     app::state().vault.lock();
 }

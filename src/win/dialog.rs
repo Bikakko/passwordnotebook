@@ -62,15 +62,16 @@ pub fn run_modal_with(hwnd: HWND, mut intercept: impl FnMut(&MSG) -> bool) {
 
 /// 相对所有者窗口居中的左上角坐标。
 ///
-/// 弹窗比所有者还高/宽时,「居中」会退化成贴着所有者左上角,底部整段掉出
-/// 屏幕(编辑框从详情弹窗里打开时就是这样)。所以结果还会**夹进显示器工作区**:
-/// 至少保证标题栏与尽可能多的内容留在屏幕内。
+/// 弹窗比所有者还大时也按「中心对中心」摆放:曾经把负偏移截断成 0,结果退化成
+/// 贴所有者左上角 —— 从详情弹窗里打开编辑器(800 宽 vs 详情 620 宽)时看起来
+/// 就是「位置偏移」。结果还会**夹进显示器工作区**:至少保证标题栏与尽可能多的
+/// 内容留在屏幕内。
 pub fn centered_position(owner: HWND, w: i32, h: i32) -> (i32, i32) {
     if owner.is_invalid() {
         return (0, 0);
     }
     let (ox, oy, ow, oh) = ui::window_rect(owner);
-    let (x, y) = (ox + (ow - w).max(0) / 2, oy + (oh - h).max(0) / 2);
+    let (x, y) = (ox + (ow - w) / 2, oy + (oh - h) / 2);
 
     let Some((left, top, right, bottom)) = ui::work_area(owner) else {
         return (x, y);

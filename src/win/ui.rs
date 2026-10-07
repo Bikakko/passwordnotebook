@@ -1345,3 +1345,130 @@ pub fn listview_bold_header(list: HWND, bold: HFONT) {
     }
 }
 
+/// 列头某一列的信息(自绘列头用)。
+struct HeaderItem {
+    text: String,
+    center: bool,
+    right: bool,
+}
+
+/// 读取列头某一列的文本与对齐方式。
+///
+/// 自己声明 `HDITEMW`(与 commctrl.h 的布局一致,`LvHitTestInfo` 同理):
+/// 自绘只需要其中几个字段,免得与 crate 的 newtype 常量纠缠。
+fn header_item(header: HWND, index: i32) -> HeaderItem {
+    const HDI_TEXT: u32 = 0x0002;
+    const HDI_FORMAT: u32 = 0x0004;
+    const HDF_RIGHT: u32 = 0x0001;
+    const HDF_CENTER: u32 = 0x0002;
+
+    #[repr(C)]
+    struct HdItemW {
+        mask: u32,
+        cxy: i32,
+        psz_text: *mut u16,
+        hbm: *mut c_void,
+        cch_text_max: i32,
+        fmt: u32,
+        lparam: isize,
+        i_image: i32,
+        i_order: i32,
+        type_: u32,
+        pv_filter: *mut c_void,
+        state: u32,
+    }
+
+    let mut buf = [0u16; 128];
+    let mut item = HdItemW {
+        mask: HDI_TEXT | HDI_FORMAT,
+        cxy: 0,
+        psz_text: buf.as_mut_ptr(),
+        hbm: std::ptr::null_mut(),
+        cch_text_max: buf.len() as i32,
+        fmt: 0,
+        lparam: 0,
+        i_image: 0,
+        i_order: 0,
+        type_: 0,
+        pv_filter: std::ptr::null_mut(),
+        state: 0,
+    };
+    let ok = send_msg(header, HDM_GETITEMW, index as usize, &mut item as *mut _ as isize) != 0;
+    let text = if ok {
+        let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        String::from_utf16_lossy(&buf[..end])
+    } else {
+        String::new()
+    };
+    HeaderItem {
+        text,
+        center: item.fmt & HDF_CENTER != 0,
+        right: item.fmt & HDF_RIGHT != 0,
+    }
+}
+
+/// 自绘一个列头项:灰底、右侧分隔线,再用列头当前字体画出标题。
+///
+/// 只在列头 `NM_CUSTOMDRAW` 的 `CDDS_ITEMPREPAINT` 阶段使用 —— 画完之后
+/// 控件不再默认绘制(调用方返回 `CDRF_SKIPDEFAULT`)。
+pub fn draw_header_item(
+    header: HWND,
+    hdc: HDC,
+    rect: &windows::Win32::Foundation::RECT,
+    index: i32,
+    back: HBRUSH,
+    separator: HBRUSH,
+) {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::Graphics::Gdi::{DrawTextW, FillRect, SelectObject, DRAW_TEXT_FORMAT};
+
+    let item = header_item(header, index);
+
+    unsafe {
+        FillRect(hdc, rect, back);
+        let line = RECT {
+            left: rect.right - 1,
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
+        };
+        FillRect(hdc, &line, separator);
+    }
+
+    let font = HFONT(send_msg(header, WM_GETFONT, 0, 0) as *mut c_void);
+    let old_font = if font.is_invalid() {
+        HGDIOBJ::default()
+    } else {
+        unsafe { SelectObject(hdc, HGDIOBJ(font.0)) }
+    };
+
+    let align = if item.center {
+        DT_CENTER
+    } else if item.right {
+        DT_RIGHT
+    } else {
+        DT_LEFT
+    };
+    let mut text_rect = RECT {
+        left: rect.left + scale(8),
+        top: rect.top,
+        right: (rect.right - scale(6)).max(rect.left + scale(8)),
+        bottom: rect.bottom,
+    };
+    let mut wide: Vec<u16> = item.text.encode_utf16().collect();
+
+    unsafe {
+        SetBkMode(hdc, BACKGROUND_MODE(1)); // TRANSPARENT
+        SetTextColor(hdc, COLORREF(TEXT));
+        DrawTextW(
+            hdc,
+            &mut wide,
+            &mut text_rect,
+            DRAW_TEXT_FORMAT(DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | align),
+        );
+        if !old_font.is_invalid() {
+            SelectObject(hdc, old_font);
+        }
+    }
+}
+
