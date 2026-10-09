@@ -10,7 +10,7 @@ use windows::core::{BOOL, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     CreateFontIndirectW, CreateSolidBrush, DeleteObject, GetSysColorBrush, InvalidateRect,
-    RedrawWindow, ScreenToClient, SetBkMode, SetTextColor, UpdateWindow, BACKGROUND_MODE,
+    RedrawWindow, ScreenToClient, SetBkColor, SetBkMode, SetTextColor, UpdateWindow, BACKGROUND_MODE,
     CLEARTYPE_QUALITY, COLOR_WINDOW, HBRUSH, HDC, HFONT, HGDIOBJ, LOGFONTW,
     RDW_ALLCHILDREN, RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW,
 };
@@ -266,6 +266,14 @@ pub fn client_size(hwnd: HWND) -> (i32, i32) {
         let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rect);
     }
     (rect.right - rect.left, rect.bottom - rect.top)
+}
+
+/// 设置编辑框的左右内边距(逻辑像素)。
+///
+/// 只读字段不画边框(见 dlg_detail),靠这里让文字不贴边。
+pub fn set_edit_margins(hwnd: HWND, horizontal: i32) {
+    let px = (scale(horizontal) as isize) & 0xFFFF;
+    send_msg(hwnd, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, px | (px << 16));
 }
 
 /// 切换编辑框的密码字符:`None` 表示明文显示。
@@ -828,6 +836,18 @@ pub fn paint_static_label(hdc: HDC, text_color: u32) -> isize {
 /// 在白色对话框上就是每个标签后面拖一条灰。
 pub fn static_label_reply(hdc_raw: usize) -> isize {
     paint_static_label(HDC(hdc_raw as *mut c_void), TEXT)
+}
+
+/// 只读值字段的 `WM_CTLCOLORSTATIC` 应答:浅灰底 + 正文色,由控件用返回的画刷填充。
+///
+/// 文字保持正文色而不是灰掉 —— 字段仍可点击复制,灰色会被读成「不可用」。
+pub fn readonly_field_reply(hdc_raw: usize, brush: HBRUSH) -> isize {
+    let hdc = HDC(hdc_raw as *mut c_void);
+    unsafe {
+        SetBkColor(hdc, COLORREF(READONLY_BG));
+        SetTextColor(hdc, COLORREF(TEXT));
+    }
+    brush.0 as isize
 }
 
 pub fn delete_font(font: HFONT) {

@@ -8,7 +8,7 @@ use windows::Win32::UI::WindowsAndMessaging::DefWindowProcW;
 use crate::recovery;
 
 use super::app;
-use super::{clipboard, dialog, sys::*, ui::{self, ctl}};
+use super::{clipboard, dialog, sys::*, tokens::BUTTON_W, ui::{self, ctl}};
 
 // ============ 展示恢复码 ============
 
@@ -89,7 +89,7 @@ unsafe extern "system" fn code_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                 0,
                 hwnd,
                 C_OK,
-                (330, 234, 210, 36),
+                (440, 234, BUTTON_W, 36),
             );
             ui::enable(s.ok, false);
 
@@ -250,7 +250,7 @@ unsafe extern "system" fn recover_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
             );
             s.error = ctl("STATIC", "", SS_LEFT, 0, hwnd, R_ERROR, (20, 262, 500, 40));
             s.submit = ctl("BUTTON", "重设登录密码并解锁", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, hwnd, R_SUBMIT, (212, 312, 200, 36));
-            ctl("BUTTON", "取消", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, R_CANCEL, (420, 312, 100, 36));
+            ctl("BUTTON", "取消", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, R_CANCEL, (420, 312, BUTTON_W, 36));
 
             let font = app::state().font;
             ui::apply_font_to(

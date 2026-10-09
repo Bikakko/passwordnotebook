@@ -11,6 +11,7 @@ use super::app;
 use super::clipboard;
 use super::dialog;
 use super::sys::*;
+use super::tokens::BUTTON_W;
 use super::ui::{self, ctl};
 
 const CLASS: &str = "PnbDlgGenerator";
@@ -156,13 +157,13 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     } else {
         BS_PUSHBUTTON
     };
-    ctl("BUTTON", "重新生成", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_REGEN, (40, 308, 120, 36));
-    ctl("BUTTON", "复制", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_COPY, (168, 308, 90, 36));
-    let use_btn = ctl("BUTTON", "使用此密码", WS_TABSTOP | use_style, 0, hwnd, ID_USE, (266, 308, 130, 36));
+    ctl("BUTTON", "重新生成", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_REGEN, (20, 308, 116, 36));
+    ctl("BUTTON", "复制", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_COPY, (144, 308, 90, 36));
+    let use_btn = ctl("BUTTON", "使用此密码", WS_TABSTOP | use_style, 0, hwnd, ID_USE, (242, 308, 130, 36));
     if !s.use_button {
         ui::set_visible(use_btn, false);
     }
-    ctl("BUTTON", "关闭", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CLOSE, (404, 308, 76, 36));
+    ctl("BUTTON", "关闭", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CLOSE, (380, 308, BUTTON_W, 36));
     s.error = ctl("STATIC", "", SS_LEFT, 0, hwnd, ID_ERROR, (20, 252, 460, 44));
 
     let font = app::state().font;

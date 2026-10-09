@@ -14,7 +14,7 @@ use windows::Win32::UI::WindowsAndMessaging::DefWindowProcW;
 use crate::export_import::{self, DuplicateStrategy, ExportOptions, Format};
 
 use super::app;
-use super::{dialog, sys::*, timefmt, ui::{self, ctl}};
+use super::{dialog, sys::*, timefmt, tokens::BUTTON_W, ui::{self, ctl}};
 
 const CLASS: &str = "PnbDlgTransfer";
 
@@ -203,7 +203,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     );
 
     s.status = ctl("STATIC", "", SS_LEFT, 0, hwnd, ID_STATUS, (20, 388, 620, 44));
-    ctl("BUTTON", "关闭", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, hwnd, ID_CLOSE, (540, 440, 120, 36));
+    ctl("BUTTON", "关闭", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, hwnd, ID_CLOSE, (560, 440, BUTTON_W, 36));
 
     for format in Format::ALL {
         ui::combo_add(s.format, format.label());

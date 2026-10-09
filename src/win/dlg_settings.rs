@@ -192,8 +192,8 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     );
 
     s.error = label(hwnd, "", ID_ERROR, (MARGIN, 658, 520, 36));
-    ctl("BUTTON", "保存", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, hwnd, ID_SAVE, (322, 700, 110, BUTTON_H));
-    ctl("BUTTON", "取消", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CANCEL, (440, 700, 100, BUTTON_H));
+    ctl("BUTTON", "保存", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, hwnd, ID_SAVE, (332, 700, BUTTON_W, BUTTON_H));
+    ctl("BUTTON", "取消", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CANCEL, (440, 700, BUTTON_W, BUTTON_H));
 
     ui::set_checked(s.quick, settings.quick_unlock_enabled);
     ui::set_checked(s.hello, settings.require_windows_hello);

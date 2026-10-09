@@ -12,6 +12,8 @@ pub const LABEL_H: i32 = 22;
 pub const FIELD_H: i32 = 30;
 pub const CHECK_H: i32 = 24;
 pub const BUTTON_H: i32 = 36;
+/// 标准对话框按钮(`确定`/`取消`/`保存`/`关闭`/`完成`/`编辑…`)的统一宽度。
+pub const BUTTON_W: i32 = 100;
 /// 下拉框的展开高度(控件自身高度由系统按字体决定,这里只给足余量)。
 pub const COMBO_DROP_H: i32 = 200;
 /// 主列表行高。
@@ -34,6 +36,8 @@ pub const MUTED_TEXT: u32 = 0x00A1_9E99;
 pub const GRIDLINE: u32 = 0x00D3_CAC5;
 /// 列表列头的背景色(浅灰,与白色内容行区分)。
 pub const HEADER_BG: u32 = 0x00EC_ECEC;
+/// 只读字段的背景色(浅灰:凹陷边框+白底是「可编辑」的样子,平底灰才读作只读)。
+pub const READONLY_BG: u32 = 0x00F0_F0F0;
 
 // 自绘分类页签。
 pub const STRIP_BG: u32 = 0x00F5_F5F5; // #F5F5F5 未选中的底色

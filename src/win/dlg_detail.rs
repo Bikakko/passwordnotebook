@@ -8,6 +8,7 @@
 use std::ffi::c_void;
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Graphics::Gdi::HBRUSH;
 use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::DefWindowProcW;
 
@@ -19,7 +20,7 @@ use super::main_ui;
 use super::{
     app, dialog, dlg_editor,
     sys::*,
-    tokens::MASK_CHAR,
+    tokens::{BUTTON_W, MASK_CHAR, READONLY_BG},
     ui::{self, ctl, label},
 };
 
@@ -58,6 +59,8 @@ const MARGIN: i32 = 20;
 const LABEL_W: i32 = 96;
 const VALUE_X: i32 = 120;
 const VALUE_W: i32 = 460;
+/// 只读字段的内边距:去掉边框后靠它让文字与左右边缘留出衬距(逻辑像素)。
+const VALUE_PAD: i32 = 6;
 const FIELD_H: i32 = 30;
 const NOTES_H: i32 = 90;
 const BUTTON_H: i32 = 36;
@@ -77,6 +80,8 @@ struct DetailState {
     show_secrets: HWND,
     status: HWND,
     values: [HWND; 7],
+    /// 只读值字段的浅灰底画刷,随窗口销毁回收。
+    readonly_brush: HBRUSH,
 }
 
 /// 打开详情弹窗;返回期间是否改动过库。
@@ -88,6 +93,7 @@ pub fn show(main: HWND, entry: &Entry) -> bool {
         show_secrets: HWND::default(),
         status: HWND::default(),
         values: [HWND::default(); 7],
+        readonly_brush: HBRUSH::default(),
     });
 
     // 600 × 520 是**窗口**尺寸(含标题栏与边框):内容底在 472,余下的
@@ -101,13 +107,24 @@ fn st(hwnd: HWND) -> &'static mut DetailState {
     unsafe { ui::state_ref::<DetailState>(hwnd) }
 }
 
+/// `WM_CTLCOLORSTATIC`:只读值字段用浅灰底回答(一眼可辨「不可编辑」),
+/// 行标签与状态行照旧透明。
+fn on_ctlcolorstatic(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> isize {
+    let s = st(hwnd);
+    let control = HWND(lparam.0 as *mut c_void);
+    if s.values.contains(&control) {
+        return ui::readonly_field_reply(wparam.0, s.readonly_brush);
+    }
+    ui::static_label_reply(wparam.0)
+}
+
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_CREATE => {
             on_create(hwnd, lparam);
             LRESULT(0)
         }
-        WM_CTLCOLORSTATIC => LRESULT(ui::static_label_reply(wparam.0)),
+        WM_CTLCOLORSTATIC => LRESULT(on_ctlcolorstatic(hwnd, wparam, lparam)),
         WM_COMMAND => {
             let (id, code) = dialog::command_params(wparam);
             on_command(hwnd, id, code);
@@ -115,6 +132,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         }
         WM_CLOSE => {
             ui::destroy_window(hwnd);
+            LRESULT(0)
+        }
+        WM_DESTROY => {
+            ui::delete_brush(st(hwnd).readonly_brush);
             LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
@@ -145,14 +166,17 @@ fn field_is_empty(entry: &Entry, index: usize) -> bool {
 
 fn on_create(hwnd: HWND, lparam: LPARAM) {
     unsafe { ui::attach_state::<DetailState>(hwnd, lparam) };
+    st(hwnd).readonly_brush = ui::create_solid_brush(READONLY_BG);
 
     for (index, &(name, _, sensitive, multiline, click_copy)) in FIELDS.iter().enumerate() {
         let y = ROW_Y0 + index as i32 * ROW_PITCH;
         label(hwnd, name, ID_LABEL_BASE + index, (MARGIN, y + 4, LABEL_W, 22));
+        // 只读字段不画边框、以浅灰平底呈现:凹陷边框 + 白底才是「可编辑」的样子,
+        // 这里的字段只负责展示(其中五行点击即复制)。
         let mut style = if multiline {
-            WS_BORDER | WS_TABSTOP | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL
+            WS_TABSTOP | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL
         } else {
-            WS_BORDER | WS_TABSTOP | ES_READONLY | ES_AUTOHSCROLL
+            WS_TABSTOP | ES_READONLY | ES_AUTOHSCROLL
         };
         // 遮蔽依靠 EM_SETPASSWORDCHAR(与编辑器同一套开关);带上 ES_PASSWORD,
         // 该消息才会生效。取消遮蔽时把它设回 0,文本就正常显示。
@@ -164,11 +188,12 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
             "EDIT",
             "",
             style,
-            WS_EX_CLIENTEDGE,
+            0,
             hwnd,
             ID_VALUE_BASE + index,
             (VALUE_X, y, VALUE_W, height),
         );
+        ui::set_edit_margins(value, VALUE_PAD);
         // 可点击复制的行挂子类化(连点同一个框也照样复制);标题与备注不挂。
         if click_copy {
             let _ = unsafe { SetWindowSubclass(value, Some(value_proc), index, hwnd.0 as usize) };
@@ -204,7 +229,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
         0,
         hwnd,
         ID_EDIT,
-        (388, BUTTONS_Y, 96, BUTTON_H),
+        (372, BUTTONS_Y, BUTTON_W, BUTTON_H),
     );
     let close = ctl(
         "BUTTON",
@@ -213,7 +238,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
         0,
         hwnd,
         ID_CLOSE,
-        (492, BUTTONS_Y, 88, BUTTON_H),
+        (480, BUTTONS_Y, BUTTON_W, BUTTON_H),
     );
 
     let mut ids: Vec<usize> = vec![ID_SHOW, ID_STATUS, ID_EDIT, ID_CLOSE];

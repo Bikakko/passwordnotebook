@@ -16,7 +16,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::model::{now_secs, Entry};
 
 use super::app;
-use super::{dialog, dlg_generator, sys::*, tokens::{MASK_CHAR, UNCATEGORIZED}, ui::{self, ctl, label}};
+use super::{dialog, dlg_generator, sys::*, tokens::{BUTTON_W, MASK_CHAR, UNCATEGORIZED}, ui::{self, ctl, label}};
 
 const CLASS: &str = "PnbDlgEntryEditor";
 /// 标签复选框容器(自动换行 + 整区滚动)的窗口类。
@@ -241,8 +241,8 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     );
 
     s.error = label(hwnd, "", ID_ERROR, (20, 378, 760, 38));
-    ctl("BUTTON", "保存", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, hwnd, ID_SAVE, (550, 420, 130, 36));
-    ctl("BUTTON", "取消", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CANCEL, (680, 420, 100, 36));
+    ctl("BUTTON", "保存", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, hwnd, ID_SAVE, (572, 420, BUTTON_W, 36));
+    ctl("BUTTON", "取消", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CANCEL, (680, 420, BUTTON_W, 36));
 
     // 填入现有数据。
     let result = s.result.clone();

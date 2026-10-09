@@ -4,7 +4,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::DefWindowProcW;
 
 use super::app;
-use super::{dialog, sys::*, ui::{self, ctl}};
+use super::{dialog, sys::*, tokens::BUTTON_W, ui::{self, ctl}};
 
 const CLASS: &str = "PnbDlgInput";
 
@@ -80,8 +80,8 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
         ID_EDIT,
         (20, 46, 420, 30),
     );
-    ctl("BUTTON", "确定", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, hwnd, ID_OK, (222, 96, 100, 36));
-    ctl("BUTTON", "取消", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CANCEL, (330, 96, 110, 36));
+    ctl("BUTTON", "确定", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, hwnd, ID_OK, (232, 96, BUTTON_W, 36));
+    ctl("BUTTON", "取消", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CANCEL, (340, 96, BUTTON_W, 36));
 
     let font = app::state().font;
     ui::apply_font_to(hwnd, &[ID_PROMPT, ID_EDIT, ID_OK, ID_CANCEL], font);

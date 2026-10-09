@@ -123,6 +123,10 @@ pub const LB_SETHORIZONTALEXTENT: u32 = 0x0194;
 
 pub const EM_SETSEL: u32 = 0x00B1;
 pub const EM_SETPASSWORDCHAR: u32 = 0x00CC;
+pub const EM_SETMARGINS: u32 = 0x00D4;
+/// EM_SETMARGINS 的 wParam:左右内边距一起设置。
+pub const EC_LEFTMARGIN: usize = 0x0001;
+pub const EC_RIGHTMARGIN: usize = 0x0002;
 
 pub const LVM_FIRST: u32 = 0x1000;
 pub const LVM_GETNEXTITEM: u32 = LVM_FIRST + 12;
