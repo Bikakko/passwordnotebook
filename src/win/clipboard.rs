@@ -1,6 +1,6 @@
 //! 剪贴板读写(纯 Win32,不使用 OLE)。
 
-use windows::Win32::Foundation::{HANDLE, HGLOBAL, HWND};
+use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
 };
@@ -41,12 +41,20 @@ pub fn set_text(text: &str) -> bool {
             let memory = HGLOBAL(handle.0);
             let ptr = GlobalLock(memory);
             if ptr.is_null() {
+                // 交不出去就必须自己释放,否则这块全局内存直接漏掉。
+                let _ = GlobalFree(Some(memory));
                 return false;
             }
             std::ptr::copy_nonoverlapping(wide.as_ptr() as *const u8, ptr as *mut u8, bytes);
             let _ = GlobalUnlock(memory);
 
-            SetClipboardData(CF_UNICODETEXT, Some(HANDLE(handle.0))).is_ok()
+            if SetClipboardData(CF_UNICODETEXT, Some(HANDLE(handle.0))).is_ok() {
+                true
+            } else {
+                // 失败时系统没有接管这块内存,同样要自己释放。
+                let _ = GlobalFree(Some(memory));
+                false
+            }
         })();
 
         let _ = CloseClipboard();
@@ -65,13 +73,15 @@ pub fn clear() {
     }
 }
 
-pub fn get_text() -> Option<String> {
+/// 读取剪贴板的文本。返回值用 `Zeroizing` 包住 —— 内容常常就是刚复制的密码,
+/// 比对完不该在堆上留副本。
+pub fn get_text() -> Option<Zeroizing<String>> {
     unsafe {
         if OpenClipboard(Some(HWND::default())).is_err() {
             return None;
         }
 
-        let result = (|| -> Option<String> {
+        let result = (|| -> Option<Zeroizing<String>> {
             let handle = GetClipboardData(CF_UNICODETEXT).ok()?;
             let memory = HGLOBAL(handle.0);
 
@@ -92,7 +102,7 @@ pub fn get_text() -> Option<String> {
             while len < cap && *ptr.add(len) != 0 {
                 len += 1;
             }
-            let text = String::from_utf16_lossy(std::slice::from_raw_parts(ptr, len));
+            let text = Zeroizing::new(String::from_utf16_lossy(std::slice::from_raw_parts(ptr, len)));
             let _ = GlobalUnlock(memory);
             Some(text)
         })();

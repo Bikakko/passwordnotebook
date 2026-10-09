@@ -129,7 +129,14 @@ impl VaultHeader {
             payload_nonce: r.array()?,
         };
 
-        if header.m_cost_kib == 0 || header.t_cost == 0 || header.p_cost == 0 {
+        // KDF 参数在密文校验**之前**就会被拿去算密钥:上界必须在这里卡住。
+        // 头部字节被改坏时 t_cost 可以是天文数字,解锁会先照它把 CPU 跑满
+        // (在 UI 线程上表现为程序假死、连窗口都关不掉);正常写入方
+        // (64 MiB / 3 轮 / 4 路)远小于这些上界。
+        if !(8..=1_048_576).contains(&header.m_cost_kib)
+            || !(1..=64).contains(&header.t_cost)
+            || !(1..=64).contains(&header.p_cost)
+        {
             return Err(VaultError::Format("密码本头部无效。".into()));
         }
 
@@ -229,6 +236,23 @@ mod tests {
     fn bad_magic_is_rejected() {
         let mut prefix = VaultHeader::generate().unwrap().to_prefix();
         prefix[0] = b'X';
+        assert!(VaultHeader::from_prefix(&prefix).is_err());
+    }
+
+    #[test]
+    fn absurd_kdf_params_are_rejected() {
+        // 密文校验之前就会按这些参数派生密钥:坏头部不能让解锁先跑满 CPU。
+        // 头部布局:magic(4) + version(1) + m(4) + t(4) + p(4) ……。
+        let mut prefix = VaultHeader::generate().unwrap().to_prefix();
+        prefix[5..9].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(VaultHeader::from_prefix(&prefix).is_err());
+
+        let mut prefix = VaultHeader::generate().unwrap().to_prefix();
+        prefix[9..13].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(VaultHeader::from_prefix(&prefix).is_err());
+
+        let mut prefix = VaultHeader::generate().unwrap().to_prefix();
+        prefix[13..17].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(VaultHeader::from_prefix(&prefix).is_err());
     }
 }

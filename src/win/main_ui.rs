@@ -635,11 +635,14 @@ pub fn apply_mode(hwnd: HWND) {
     }
     for c in [
         s.new_btn, s.gen_btn, s.bin_btn, s.taxonomy_btn, s.transfer_btn, s.settings_btn, s.lock_btn,
-        s.search, s.search_icon, s.cat_tabs, s.fav_only_btn, s.tag_label, s.tag_list, s.list,
+        s.search, s.cat_tabs, s.fav_only_btn, s.tag_label, s.tag_list, s.list,
         s.sort_combo, s.status,
     ] {
         ui::set_visible(c, main);
     }
+    // 没有图标字体(系统缺 Segoe Fluent/MDL2)时放大镜会画出方框:
+    // 宁可只隐藏它,也别在搜索框前留一个乱码。布局里同时把搜索框贴回左缘。
+    ui::set_visible(s.search_icon, main && !app::state().font_icon_sm.is_invalid());
     for c in [
         s.bin_title, s.bin_list, s.bin_restore_btn, s.bin_purge_btn, s.bin_empty_btn,
         s.bin_back_btn,
@@ -765,13 +768,16 @@ fn layout_inner(hwnd: HWND) {
 
     let search_y = margin + btn_h + scale(8);
     // 放大镜放在搜索框**外**的左侧:叠在框内会挡住占位文字。
+    // 没有图标字体时不显示放大镜,搜索框贴回左缘。
     let search_icon_w = scale(20);
+    let icon_ok = !app::state().font_icon_sm.is_invalid();
+    let lead = if icon_ok { search_icon_w + scale(6) } else { 0 };
     ui::move_to(s.search_icon, margin, search_y + scale(4), search_icon_w, search_icon_w);
     ui::move_to(
         s.search,
-        margin + search_icon_w + scale(6),
+        margin + lead,
         search_y,
-        cw - margin * 2 - search_icon_w - scale(6),
+        cw - margin * 2 - lead,
         scale(28),
     );
 
@@ -1082,7 +1088,6 @@ fn refresh_list(hwnd: HWND) {
         ui::set_text(s.empty_hint, hint);
         ui::set_text(s.empty_icon, glyph);
     }
-    ui::set_visible(s.empty_hint, empty);
     show_empty_state(s.empty_hint, s.empty_icon, empty);
     if empty {
         // 行数变少/清空时旧网格线可能残留:整块擦除重画一次。
@@ -1110,7 +1115,13 @@ fn refresh_bin(hwnd: HWND) {
         let remaining = if retention <= 0 {
             "永久保留".to_string()
         } else {
-            let days = ((deleted + retention * 86_400 - now) as f64 / 86_400.0).ceil();
+            // 天数参与乘法:库里的值一旦异常(被手改成天文数字),普通乘法
+            // 回绕后可能算出「已过期」,解锁时把回收站整块清掉 —— 用饱和运算兜住。
+            let days = (deleted
+                .saturating_add(retention.saturating_mul(86_400))
+                .saturating_sub(now) as f64
+                / 86_400.0)
+                .ceil();
             format!("剩余 {} 天", days.max(0.0) as i64)
         };
         s.bin_rows.push(entry.id.clone());
@@ -1425,7 +1436,9 @@ fn paint_tag_chips(
     let selected = ui::send_msg(list, LVM_GETITEMSTATE, row, LVIS_SELECTED as isize) as u32
         & LVIS_SELECTED
         != 0;
-    let (border, text_color) = if selected {
+    // 选中且列表持有焦点时,系统把行底画成主色蓝、行文字变白,芯片跟着反白;
+    // 列表失焦后的选中行是浅色底+深色字,再沿用白芯片就看不见了。
+    let (border, text_color) = if selected && ui::has_focus(list) {
         (ACCENT_TEXT, ACCENT_TEXT)
     } else {
         (CHIP_BORDER, CHIP_TEXT)
@@ -2087,7 +2100,7 @@ pub fn on_timer(hwnd: HWND, id: usize) {
                         return;
                     }
                     // 到期了才比对,而且直接借用,不再 clone。
-                    clipboard::get_text().as_deref() == Some(expected.as_str())
+                    clipboard::get_text().is_some_and(|t| t.as_str() == expected.as_str())
                 }
             };
 
@@ -2619,7 +2632,10 @@ fn show_detail(hwnd: HWND) {
 ///
 /// 文案由调用方决定显示在哪里:主界面进状态栏,详情弹窗进自己的状态行。
 pub(crate) fn copy_text(main: HWND, text: Zeroizing<String>, what: &str, sensitive: bool) -> String {
-    clipboard::set_text(&text);
+    if !clipboard::set_text(&text) {
+        // 别把失败说成成功:用户会以为密码已经在剪贴板里,结果粘出来是旧内容。
+        return "复制失败（剪贴板正被其他程序占用，稍后重试）。".to_string();
+    }
 
     let seconds = app::state().settings.clipboard_clear_seconds;
     if !sensitive || seconds == 0 {
@@ -2759,6 +2775,15 @@ pub fn confirm_exit(hwnd: HWND) -> bool {
 /// **不要**清 DPAPI 缓存 —— 那样下次启动就需要重新输入登录密码,
 /// 而设计目标是「屏保前保持免密」。
 pub fn on_destroy(hwnd: HWND) {
+    // 退出前把没到期的自动清空补上:进程一走 TIMER_CLIPBOARD 就没了,
+    // 密码会一直留在剪贴板里。只在内容仍是我们放进的那份时才清,
+    // 免得误清用户后来自己复制的东西。
+    let expected = st(hwnd).clipboard_deadline.take().map(|(_, text)| text);
+    if let Some(expected) = expected
+        && clipboard::get_text().is_some_and(|t| t.as_str() == expected.as_str())
+    {
+        clipboard::clear();
+    }
     ui::delete_brush(st(hwnd).grid_brush);
     ui::delete_brush(st(hwnd).header_brush);
     app::state().vault.lock();

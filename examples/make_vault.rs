@@ -19,7 +19,7 @@ fn main() {
     match password_notebook::vault::VaultService::create_new(Path::new(&path), &password) {
         Ok(code) => {
             println!("已创建:{path}");
-            println!("恢复码:{code}");
+            println!("恢复码:{}", code.as_str());
         }
         Err(e) => {
             eprintln!("创建失败:{e}");

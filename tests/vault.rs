@@ -38,7 +38,10 @@ impl TempVault {
     }
 
     fn create(&self, password: &str) -> String {
-        VaultService::create_new_with_params(&self.path, password, M, T, P).unwrap()
+        // 集成测试用不到 Zeroizing(也不该为它引入 dev-dependency),转回普通 String。
+        VaultService::create_new_with_params(&self.path, password, M, T, P)
+            .unwrap()
+            .to_string()
     }
 }
 
@@ -325,7 +328,7 @@ fn regenerate_recovery_code_invalidates_old_one() {
     let mut vault = VaultService::new();
     vault.open(&tv.path, PASSWORD).unwrap();
     let new = vault.regenerate_recovery_code().unwrap();
-    assert_ne!(old, new);
+    assert_ne!(old, new.as_str());
 
     assert!(VaultService::new().open_with_recovery_code(&tv.path, &old).is_err());
     assert!(VaultService::new().open_with_recovery_code(&tv.path, &new).is_ok());

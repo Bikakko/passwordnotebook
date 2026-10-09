@@ -99,8 +99,8 @@ impl VaultService {
 
     // ---------- 创建与解锁 ----------
 
-    /// 创建新密码本,返回一次性恢复码。
-    pub fn create_new(path: &Path, master_password: &str) -> Result<String> {
+    /// 创建新密码本,返回一次性恢复码(Zeroizing 容器,离开作用域即清零)。
+    pub fn create_new(path: &Path, master_password: &str) -> Result<Zeroizing<String>> {
         Self::create_new_with_params(
             path,
             master_password,
@@ -117,10 +117,11 @@ impl VaultService {
         m_cost_kib: u32,
         t_cost: u32,
         p_cost: u32,
-    ) -> Result<String> {
+    ) -> Result<Zeroizing<String>> {
         let header = VaultHeader::generate_with(m_cost_kib, t_cost, p_cost)?;
         let dek = Zeroizing::new(crypto::random(KEY_LEN)?);
-        let recovery_code = recovery::generate()?;
+        // 恢复码等同于主密码的找回凭证,同样随作用域清零。
+        let recovery_code = Zeroizing::new(recovery::generate()?);
         let normalized = recovery::normalize(&recovery_code)
             .ok_or_else(|| VaultError::Crypto("恢复码生成失败。".into()))?;
 
@@ -372,11 +373,11 @@ impl VaultService {
         self.rewrite_slot(Slot::Password, new.as_bytes())
     }
 
-    /// 重新生成恢复码,返回新码(旧码立即失效)。
-    pub fn regenerate_recovery_code(&mut self) -> Result<String> {
+    /// 重新生成恢复码,返回新码(旧码立即失效;返回值为 Zeroizing 容器)。
+    pub fn regenerate_recovery_code(&mut self) -> Result<Zeroizing<String>> {
         self.flush_pending_before_slot_write();
 
-        let code = recovery::generate()?;
+        let code = Zeroizing::new(recovery::generate()?);
         let normalized = recovery::normalize(&code)
             .ok_or_else(|| VaultError::Crypto("恢复码生成失败。".into()))?;
         self.rewrite_slot(Slot::Recovery, normalized.as_bytes())?;
@@ -746,7 +747,11 @@ impl VaultService {
         if retention_days <= 0 {
             return Ok(0);
         }
-        self.purge_bin_entries_older_than(now_secs() - retention_days * 86_400)
+        // 饱和运算:库里的保留天数被改坏成天文数字时,普通乘法回绕会算出
+        // 一个「所有条目都已过期」的 cutoff,把回收站静默清空。
+        self.purge_bin_entries_older_than(
+            now_secs().saturating_sub(retention_days.saturating_mul(86_400)),
+        )
     }
 
     /// 清理删除时间早于 `cutoff`(Unix 秒)的回收站条目。

@@ -177,7 +177,11 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     );
 
     regenerate(hwnd);
-    ui::set_focus(use_btn);
+    // 「使用此密码」在不需要时是隐藏的:焦点不能停在一个看不见的控件上,
+    // 否则用户直接打字没有反应,还要先按一次 Tab。
+    if s.use_button {
+        ui::set_focus(use_btn);
+    }
 }
 
 fn on_command(hwnd: HWND, id: usize, code: u16) {

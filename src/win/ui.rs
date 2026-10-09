@@ -22,7 +22,7 @@ use windows::Win32::UI::Controls::{
 };
 use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
-use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
+use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetFocus, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DestroyMenu, DestroyWindow, EnumChildWindows,
     GetClassNameW, GetCursorPos, GetDlgItem, GetWindowLongPtrW, GetWindowTextLengthW,
@@ -285,6 +285,11 @@ pub fn set_focus(hwnd: HWND) {
     unsafe {
         let _ = SetFocus(Some(hwnd));
     }
+}
+
+/// 该窗口当前是否持有键盘焦点(自绘取色用)。
+pub fn has_focus(hwnd: HWND) -> bool {
+    unsafe { GetFocus() == hwnd }
 }
 
 /// 取窗口客户区大小。

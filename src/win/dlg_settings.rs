@@ -177,12 +177,13 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     );
 
     s.error = label(hwnd, "", ID_ERROR, (MARGIN, 612, 340, 36));
-    ui::accent_button(hwnd, "保存", BS_DEFPUSHBUTTON, ID_SAVE, (132, 654, BUTTON_W, BUTTON_H));
-    ctl("BUTTON", "取消", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CANCEL, (240, 654, BUTTON_W, BUTTON_H));
+    ui::accent_button(hwnd, "保存", BS_DEFPUSHBUTTON, ID_SAVE, (152, 654, BUTTON_W, BUTTON_H));
+    ctl("BUTTON", "取消", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CANCEL, (260, 654, BUTTON_W, BUTTON_H));
 
     ui::set_checked(s.quick, settings.quick_unlock_enabled);
-    // 设备不支持 Hello 时,即便库里存着「要求验证」也按未勾选呈现。
-    ui::set_checked(s.hello, settings.require_windows_hello && available);
+    // 忠实显示库里的值:设备不支持 Hello 时只置灰、不改勾选状态 ——
+    // 显示成未勾选会让「保存其它设置」把库里的 require_windows_hello 静默清掉。
+    ui::set_checked(s.hello, settings.require_windows_hello);
 
     let font = app::state().font;
     ui::apply_font_to(

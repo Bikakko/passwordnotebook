@@ -9,6 +9,7 @@ use crate::recovery;
 
 use super::app;
 use super::{clipboard, dialog, sys::*, tokens::BUTTON_W, ui::{self, ctl}};
+use zeroize::Zeroizing;
 
 // ============ 展示恢复码 ============
 
@@ -22,14 +23,15 @@ const C_OK: usize = 5;
 const C_CONFIRM: usize = 6;
 
 struct CodeState {
-    code: String,
+    /// 恢复码等同于主密码的找回凭证,随对话框状态一起清零。
+    code: Zeroizing<String>,
     confirm: HWND,
     ok: HWND,
 }
 
 pub fn show_code(owner: HWND, code: &str, initial: bool) {
     let state = Box::new(CodeState {
-        code: code.to_string(),
+        code: Zeroizing::new(code.to_string()),
         confirm: HWND::default(),
         ok: HWND::default(),
     });

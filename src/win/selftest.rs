@@ -11,6 +11,8 @@
 use std::io::Write;
 use std::sync::Mutex;
 
+use zeroize::Zeroizing;
+
 use crate::model::Entry;
 use crate::vault::VaultService;
 use crate::vaultfile::VaultFile;
@@ -404,7 +406,7 @@ fn core_checks() -> usize {
         Err(e) => {
             println!("  FAIL  创建密码本:{e}");
             failures += 1;
-            String::new()
+            Zeroizing::new(String::new())
         }
     };
 
@@ -677,8 +679,11 @@ fn core_checks() -> usize {
     }
 
     // 篡改检测
-    if let Ok(mut bytes) = std::fs::read(&path) {
-        let last = bytes.len() - 1;
+    // 上一次自检中断留下的 0 字节文件会让 `len() - 1` 下溢 ——
+    // panic=abort 下进程直接消失,连报告都看不到。
+    if let Ok(mut bytes) = std::fs::read(&path)
+        && let Some(last) = bytes.len().checked_sub(1)
+    {
         bytes[last] ^= 0xFF;
         let tampered = dir.join("tampered.pkk");
         let _ = std::fs::write(&tampered, &bytes);
@@ -745,7 +750,7 @@ fn core_checks() -> usize {
     if super::clipboard::set_text("pnb-clipboard-probe") {
         check!(
             "剪贴板读写",
-            super::clipboard::get_text().as_deref() == Some("pnb-clipboard-probe")
+            super::clipboard::get_text().is_some_and(|t| t.as_str() == "pnb-clipboard-probe")
         );
     } else {
         println!("  SKIP  剪贴板(当前会话不可用)");
