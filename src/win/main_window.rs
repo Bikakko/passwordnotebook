@@ -74,10 +74,12 @@ pub fn run_main_inner(auto_close_ms: Option<u32>) -> i32 {
             let _ = super::window_state::restore(hwnd, &placement);
 
             // SetWindowPlacement 会绕过最小尺寸限制,可能把窗口还原得比允许的还小,
-            // 那样布局会被挤坏。太小就回到默认几何。
-            let (_, _, restored_w, restored_h) = ui::window_rect(hwnd);
+            // 那样布局会被挤坏;上次的窗口如果停在之后被拔掉的显示器上,还原位置
+            // 会整个落在屏幕外(表现为「启动了但看不见窗口」)。两种异常都回到默认几何。
+            let rect = ui::window_rect(hwnd);
+            let (_, _, restored_w, restored_h) = rect;
             let (min_w, min_h) = minimum_size();
-            if restored_w < min_w || restored_h < min_h {
+            if restored_w < min_w || restored_h < min_h || !overlaps_work_area(hwnd, rect) {
                 let (w, h, x, y) = initial_geometry();
                 unsafe {
                     let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowPos(
@@ -120,6 +122,18 @@ pub fn run_main_inner(auto_close_ms: Option<u32>) -> i32 {
 /// 允许的最小窗口尺寸(与 WM_GETMINMAXINFO 保持一致)。
 fn minimum_size() -> (i32, i32) {
     (ui::scale(900), ui::scale(600))
+}
+
+/// 窗口矩形是否与某个显示器的工作区相交(`work_area` 取的是离它最近的显示器)。
+///
+/// 完全不相交 = 上次的窗口停在之后被拔掉/改接线的显示器上,还原后用户会看到
+/// 「程序启动了但窗口不知在哪」;这种情况退回默认几何。
+fn overlaps_work_area(hwnd: HWND, rect: (i32, i32, i32, i32)) -> bool {
+    let Some((left, top, right, bottom)) = ui::work_area(hwnd) else {
+        return true; // 问不出工作区就不拦,保持原样
+    };
+    let (x, y, w, h) = rect;
+    x < right && x + w > left && y < bottom && y + h > top
 }
 
 /// 按系统 DPI 缩放后在主屏居中。
