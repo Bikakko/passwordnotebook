@@ -13,8 +13,11 @@ name = "pnb"
 path = "src/main.rs"
 
 [dependencies]
-aes-gcm = "0.11.1"
-argon2 = "0.6.0"
+# 关掉用不到的默认 feature(getrandom 随机数辅助 / password-hash 封装):
+# 全仓库只用 Aes256Gcm::new/encrypt/decrypt 与 Argon2::hash_password_into,
+# 随机数统一走 getrandom。
+aes-gcm = { version = "0.11.1", default-features = false, features = ["aes", "alloc"] }
+argon2 = { version = "0.6.0", default-features = false, features = ["alloc"] }
 getrandom = "0.4.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

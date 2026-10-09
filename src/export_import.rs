@@ -71,19 +71,33 @@ fn too_many_entries(actual: usize) -> VaultError {
 }
 
 /// 把字节数说成人话,避免界面里出现「62914560 字节」这种没法判断的数字。
+///
+/// 纯整数实现:输出与旧的 `{:.1}` 浮点写法逐项一致(四舍五入、平局取偶),
+/// 同时把整套 f64 格式化机器挡在二进制外(约占 15 KB)。
 fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
+    let num = bytes as u128;
+    let mut unit = 0usize;
+    while unit + 1 < UNITS.len() && num >= 1024u128.pow(unit as u32 + 1) {
         unit += 1;
     }
+    let den = 1024u128.pow(unit as u32);
+    let round = |n: u128| -> u128 {
+        let (q, r) = (n / den, n % den);
+        let twice = r * 2;
+        // 四舍五入;平局时向偶数取整(与 `{:.0}` / `{:.1}` 的口径一致)。
+        if twice > den || (twice == den && q % 2 == 1) {
+            q + 1
+        } else {
+            q
+        }
+    };
     // 整数值不打小数点(B / KB 走这条路),否则保留一位。
-    if value >= 10.0 || value.fract() == 0.0 {
-        format!("{value:.0} {}", UNITS[unit])
+    if num >= 10 * den || num.is_multiple_of(den) {
+        format!("{} {}", round(num), UNITS[unit])
     } else {
-        format!("{value:.1} {}", UNITS[unit])
+        let tenths = round(num * 10);
+        format!("{}.{} {}", tenths / 10, tenths % 10, UNITS[unit])
     }
 }
 
@@ -1523,6 +1537,10 @@ mod tests {
         assert_eq!(human_size(512), "512 B");
         assert_eq!(human_size(1024), "1 KB");
         assert_eq!(human_size(MAX_IMPORT_BYTES), "64 MB");
+        // 一位小数与「平局取偶」的取整口径(与旧浮点写法逐项一致)。
+        assert_eq!(human_size(1536), "1.5 KB");
+        assert_eq!(human_size(1280), "1.2 KB");
+        assert_eq!(human_size(1_048_575), "1024 KB");
     }
 
     /// 空行也要占条数预算 —— 否则一整个 64 MB 的纯换行文件能撑出六千多万个
