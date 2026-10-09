@@ -102,9 +102,23 @@ const ID_FAV_ONLY_BTN: usize = 2221;
 const ID_NEW_BTN: usize = 2222;
 /// 主列表没有可显示的条目时的空状态提示。
 const ID_EMPTY_HINT: usize = 2223;
+/// 空状态的大图标。
+const ID_EMPTY_ICON: usize = 2224;
+/// 搜索框左侧的放大镜(点击等同于点搜索框)。
+const ID_SEARCH_ICON: usize = 2225;
+/// 回收站空状态的大图标。
+const ID_BIN_EMPTY_ICON: usize = 2226;
+
+/// 空状态与搜索框用的图标字形(Segoe MDL2 与 Segoe Fluent Icons 码位一致)。
+const GLYPH_KEY: &str = "\u{E8D7}"; // Permissions(钥匙)
+const GLYPH_STAR: &str = "\u{E734}"; // FavoriteStar
+const GLYPH_SEARCH: &str = "\u{E721}"; // Search
+const GLYPH_TRASH: &str = "\u{E74D}"; // Delete
+
+/// 「标签」在 MAIN_LIST_COLUMNS 里的下标(该列文本置空,整列自绘微标签)。
+const TAGS_COLUMN: usize = 4;
 
 const ID_BIN_TITLE: usize = 2301;
-const ID_BIN_HINT: usize = 2302;
 const ID_BIN_LIST: usize = 2303;
 const ID_BIN_RESTORE_BTN: usize = 2304;
 const ID_BIN_PURGE_BTN: usize = 2305;
@@ -165,6 +179,8 @@ pub struct MainUi {
     pub settings_btn: HWND,
     pub lock_btn: HWND,
     pub search: HWND,
+    /// 搜索框左侧的放大镜图标。
+    pub search_icon: HWND,
     pub cat_tabs: HWND,
     pub tag_label: HWND,
     pub tag_list: HWND,
@@ -173,9 +189,10 @@ pub struct MainUi {
     pub status: HWND,
     /// 主列表为空时居中显示的引导文字。
     pub empty_hint: HWND,
+    /// 主列表空状态的大图标(钥匙 / 星 / 放大镜,随空的原因切换)。
+    pub empty_icon: HWND,
 
     pub bin_title: HWND,
-    pub bin_hint: HWND,
     pub bin_list: HWND,
     pub bin_restore_btn: HWND,
     pub bin_purge_btn: HWND,
@@ -183,6 +200,8 @@ pub struct MainUi {
     pub bin_back_btn: HWND,
     /// 回收站为空时居中显示的提示文字。
     pub bin_empty_hint: HWND,
+    /// 回收站空状态的大图标(垃圾桶)。
+    pub bin_empty_icon: HWND,
 
     /// 条目列表当前显示顺序对应的条目 id。
     rows: Vec<String>,
@@ -200,6 +219,11 @@ pub struct MainUi {
     /// 主列表每行的显示单元格(与 `rows` 同序)。
     /// 列表是虚拟列表(`LVS_OWNERDATA`),行文本在控件索取时才由这里提供。
     row_cells: Vec<[String; 6]>,
+    /// 主列表每行的标签(与 `rows` 同序):「标签」列整列自绘微标签,
+    /// 文本不再经 `LVN_GETDISPINFO` 提供,绘制时直接取这里。
+    row_chips: Vec<Vec<String>>,
+    /// 创建表单强度行的分档(None = 还没填密码;决定文字颜色)。
+    create_strength_score: Option<u8>,
     /// 回收站列表每行的显示单元格(与 `bin_rows` 同序)。
     bin_row_cells: Vec<[String; 5]>,
     /// `LVN_GETDISPINFO` 的复用缓冲:控件在本条消息返回前复制文本。
@@ -251,6 +275,7 @@ impl MainUi {
             settings_btn: zero,
             lock_btn: zero,
             search: zero,
+            search_icon: zero,
             cat_tabs: zero,
             tag_label: zero,
             tag_list: zero,
@@ -258,14 +283,15 @@ impl MainUi {
             sort_combo: zero,
             status: zero,
             empty_hint: zero,
+            empty_icon: zero,
             bin_title: zero,
-            bin_hint: zero,
             bin_list: zero,
             bin_restore_btn: zero,
             bin_purge_btn: zero,
             bin_empty_btn: zero,
             bin_back_btn: zero,
             bin_empty_hint: zero,
+            bin_empty_icon: zero,
             rows: Vec::new(),
             bin_rows: Vec::new(),
             category_names: Vec::new(),
@@ -273,6 +299,8 @@ impl MainUi {
             header_brush: HBRUSH::default(),
             grid_columns: Vec::new(),
             row_cells: Vec::new(),
+            row_chips: Vec::new(),
+            create_strength_score: None,
             bin_row_cells: Vec::new(),
             disp_buffer: Vec::new(),
             clipboard_deadline: None,
@@ -298,7 +326,7 @@ const ALL_CONTROL_IDS: &[usize] = &[
     ID_SETTINGS_BTN, ID_LOCK_BTN,
     ID_SEARCH, ID_CAT_TABS, ID_TAG_LABEL, ID_TAG_LIST, ID_LIST, ID_SORT_COMBO,
     ID_STATUS, ID_EMPTY_HINT,
-    ID_BIN_TITLE, ID_BIN_HINT, ID_BIN_LIST, ID_BIN_RESTORE_BTN, ID_BIN_PURGE_BTN,
+    ID_BIN_TITLE, ID_BIN_LIST, ID_BIN_RESTORE_BTN, ID_BIN_PURGE_BTN,
     ID_BIN_EMPTY_BTN, ID_BIN_BACK_BTN, ID_BIN_EMPTY_HINT,
 ];
 
@@ -312,6 +340,9 @@ pub fn apply_fonts(hwnd: HWND) {
     for control in [s.unlock_title, s.create_title, s.bin_title] {
         ui::send_msg(control, WM_SETFONT, bold.0 as usize, 1);
     }
+    // 图标控件用专门的图标字体;字体不可用时图标由显示逻辑统一跳过。
+    ui::apply_font_to(hwnd, &[ID_EMPTY_ICON, ID_BIN_EMPTY_ICON], app::state().font_icon_lg);
+    ui::apply_font_to(hwnd, &[ID_SEARCH_ICON], app::state().font_icon_sm);
     // 按钮与分类页签用粗体,列表列头也加粗:动作/标题类信息与正文拉开层级。
     ui::apply_bold_actions(hwnd, bold);
     ui::listview_bold_header(s.list, bold);
@@ -335,9 +366,15 @@ pub fn on_ctlcolor_static(hwnd: HWND, hdc_raw: usize, control_raw: isize) -> isi
 
     let s = st(hwnd);
     let is_error = control == s.unlock_error || control == s.create_error;
-    let is_muted = control == s.empty_hint || control == s.bin_empty_hint;
+    let is_empty_icon = control == s.empty_icon || control == s.bin_empty_icon;
+    let is_muted =
+        control == s.empty_hint || control == s.bin_empty_hint || control == s.search_icon;
     let color = if is_error {
         ERROR_TEXT
+    } else if is_empty_icon {
+        EMPTY_ICON
+    } else if control == s.create_strength {
+        strength_color(s.create_strength_score)
     } else if is_muted {
         MUTED_TEXT
     } else {
@@ -356,8 +393,19 @@ fn center_text(parent: HWND, s: &str, id: usize) -> HWND {
     ui::create_window("STATIC", s, WS_CHILD | SS_CENTER, 0, parent, id, 0, 0, 10, 10)
 }
 
+/// 空状态(提示 + 图标)一起显隐。两者都漂浮在列表之上,必须走
+/// [`ui::set_overlay_visible`]:显示时提到最顶层,否则列表一重绘就会盖掉它们
+/// (切页签后提示消失的根源)。图标缺字体时不显示。
+fn show_empty_state(hint: HWND, icon: HWND, visible: bool) {
+    ui::set_overlay_visible(hint, visible);
+    ui::set_overlay_visible(icon, visible && !app::state().font_icon_lg.is_invalid());
+}
+
 fn button(parent: HWND, s: &str, style: u32, id: usize) -> HWND {
-    ui::create_window("BUTTON", s, WS_CHILD | WS_TABSTOP | style, 0, parent, id, 0, 0, 10, 10)
+    let hwnd = ui::create_window("BUTTON", s, WS_CHILD | WS_TABSTOP | style, 0, parent, id, 0, 0, 10, 10);
+    // 推送按钮统一换成自绘圆角样式(复选框等不受影响,内部按样式判断)。
+    ui::style_flat_button(hwnd);
+    hwnd
 }
 
 fn edit(parent: HWND, style: u32, id: usize) -> HWND {
@@ -384,7 +432,7 @@ fn listbox(parent: HWND, id: usize) -> HWND {
         "LISTBOX",
         "",
         WS_CHILD | WS_BORDER | WS_VSCROLL | WS_HSCROLL | WS_TABSTOP | LBS_NOTIFY
-            | LBS_NOINTEGRALHEIGHT,
+            | LBS_NOINTEGRALHEIGHT | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS,
         0,
         parent,
         id,
@@ -399,8 +447,8 @@ fn listview(parent: HWND, id: usize) -> HWND {
     ui::create_window(
         "SysListView32",
         "",
-        WS_CHILD | WS_BORDER | WS_VSCROLL | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL
-            | LVS_SHOWSELALWAYS | LVS_OWNERDATA,
+        WS_CHILD | WS_BORDER | WS_VSCROLL | WS_TABSTOP | WS_CLIPSIBLINGS | LVS_REPORT
+            | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_OWNERDATA,
         WS_EX_CLIENTEDGE,
         parent,
         id,
@@ -411,9 +459,10 @@ fn listview(parent: HWND, id: usize) -> HWND {
     )
 }
 
-/// 列表控件初始化:扩展样式(整行选中 + 网格线)与列。
+/// 列表控件初始化:整行选中;网格线全部由自绘负责(LVS_EX_GRIDLINES 关掉 ——
+/// 控件自带的那条与自绘线错位,会在边缘出现「断裂」)。
 fn init_list(list: HWND, columns: &[ListColDef]) {
-    ui::listview_set_extended_style(list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
+    ui::listview_set_extended_style(list, LVS_EX_FULLROWSELECT);
     for (i, &(title, width, _)) in columns.iter().enumerate() {
         ui::listview_add_column(list, i as i32, scale(width), title);
     }
@@ -435,7 +484,7 @@ pub fn on_create(hwnd: HWND, lparam: LPARAM) {
     s.unlock_pw_label = text(hwnd, "登录密码", ID_UNLOCK_PW_LABEL);
     s.unlock_pw = edit(hwnd, ES_PASSWORD, ID_UNLOCK_PW);
     s.unlock_show = checkbox(hwnd, "显示密码", ID_UNLOCK_SHOW);
-    s.unlock_btn = button(hwnd, "解锁", BS_DEFPUSHBUTTON, ID_UNLOCK_BTN);
+    s.unlock_btn = ui::accent_button(hwnd, "解锁", BS_DEFPUSHBUTTON, ID_UNLOCK_BTN, (0, 0, 10, 10));
     s.hello_btn = button(hwnd, "使用 Windows Hello 解锁", BS_PUSHBUTTON, ID_HELLO_BTN);
     s.forgot_btn = button(hwnd, "忘记登录密码？", BS_PUSHBUTTON, ID_FORGOT_BTN);
     s.goto_create_btn = button(hwnd, "创建新密码本", BS_PUSHBUTTON, ID_GOTO_CREATE_BTN);
@@ -455,7 +504,8 @@ pub fn on_create(hwnd: HWND, lparam: LPARAM) {
     s.create_pw2_label = text(hwnd, "确认登录密码", ID_CREATE_PW2_LABEL);
     s.create_pw2 = edit(hwnd, ES_PASSWORD, ID_CREATE_PW2);
     s.create_strength = text(hwnd, "", ID_CREATE_STRENGTH);
-    s.create_btn = button(hwnd, "创建并开始使用", BS_DEFPUSHBUTTON, ID_CREATE_BTN);
+    s.create_btn =
+        ui::accent_button(hwnd, "创建并开始使用", BS_DEFPUSHBUTTON, ID_CREATE_BTN, (0, 0, 10, 10));
     s.create_error = text(hwnd, "", ID_CREATE_ERROR);
 
     s.new_btn = button(hwnd, "新建", BS_PUSHBUTTON, ID_NEW_BTN);
@@ -467,6 +517,19 @@ pub fn on_create(hwnd: HWND, lparam: LPARAM) {
     s.settings_btn = button(hwnd, "设置", BS_PUSHBUTTON, ID_SETTINGS_BTN);
     s.lock_btn = button(hwnd, "锁定", BS_PUSHBUTTON, ID_LOCK_BTN);
     s.search = edit(hwnd, ES_AUTOHSCROLL, ID_SEARCH);
+    ui::set_cue_banner(s.search, "搜索标题、用户名、网址…");
+    s.search_icon = ui::create_window(
+        "STATIC",
+        GLYPH_SEARCH,
+        WS_CHILD | SS_CENTER | SS_NOTIFY,
+        0,
+        hwnd,
+        ID_SEARCH_ICON,
+        0,
+        0,
+        10,
+        10,
+    );
     ui::register_tab_strip_class();
     s.cat_tabs = ui::create_window(
         "PnbTabStrip",
@@ -498,15 +561,11 @@ pub fn on_create(hwnd: HWND, lparam: LPARAM) {
     s.status = text(hwnd, "", ID_STATUS);
     // 空状态:默认隐藏,列表为空时由 refresh_list / refresh_bin 显示出来。
     s.empty_hint = center_text(hwnd, "还没有条目。点「新建」开始记录。", ID_EMPTY_HINT);
+    s.empty_icon = center_text(hwnd, GLYPH_KEY, ID_EMPTY_ICON);
 
     init_list(s.list, MAIN_LIST_COLUMNS);
 
     s.bin_title = text(hwnd, "回收站", ID_BIN_TITLE);
-    s.bin_hint = text(
-        hwnd,
-        "删除的条目先放进回收站，可随时恢复；超过保留期会在下次解锁时彻底删除。",
-        ID_BIN_HINT,
-    );
     s.bin_list = listview(hwnd, ID_BIN_LIST);
     s.bin_restore_btn = button(hwnd, "恢复", BS_PUSHBUTTON, ID_BIN_RESTORE_BTN);
     s.bin_purge_btn = button(hwnd, "彻底删除", BS_PUSHBUTTON, ID_BIN_PURGE_BTN);
@@ -514,6 +573,7 @@ pub fn on_create(hwnd: HWND, lparam: LPARAM) {
     s.bin_back_btn = button(hwnd, "返回列表", BS_PUSHBUTTON, ID_BIN_BACK_BTN);
     // 空状态:默认隐藏,由 refresh_bin 按回收站条数显示。
     s.bin_empty_hint = center_text(hwnd, "回收站是空的。", ID_BIN_EMPTY_HINT);
+    s.bin_empty_icon = center_text(hwnd, GLYPH_TRASH, ID_BIN_EMPTY_ICON);
 
     init_list(s.bin_list, BIN_LIST_COLUMNS);
 
@@ -575,21 +635,21 @@ pub fn apply_mode(hwnd: HWND) {
     }
     for c in [
         s.new_btn, s.gen_btn, s.bin_btn, s.taxonomy_btn, s.transfer_btn, s.settings_btn, s.lock_btn,
-        s.search, s.cat_tabs, s.fav_only_btn, s.tag_label, s.tag_list, s.list, s.sort_combo,
-        s.status,
+        s.search, s.search_icon, s.cat_tabs, s.fav_only_btn, s.tag_label, s.tag_list, s.list,
+        s.sort_combo, s.status,
     ] {
         ui::set_visible(c, main);
     }
     for c in [
-        s.bin_title, s.bin_hint, s.bin_list, s.bin_restore_btn, s.bin_purge_btn, s.bin_empty_btn,
+        s.bin_title, s.bin_list, s.bin_restore_btn, s.bin_purge_btn, s.bin_empty_btn,
         s.bin_back_btn,
     ] {
         ui::set_visible(c, bin);
     }
     // 空状态跟着数据走,不能按形态无条件显示:apply_mode 总是在 refresh_* 之后调用,
     // 无条件显示会把 refresh_* 刚算好的结论覆盖掉(列表里明明有条目却盖着「还没有条目」)。
-    ui::set_visible(s.empty_hint, main && s.rows.is_empty());
-    ui::set_visible(s.bin_empty_hint, bin && s.bin_rows.is_empty());
+    show_empty_state(s.empty_hint, s.empty_icon, main && s.rows.is_empty());
+    show_empty_state(s.bin_empty_hint, s.bin_empty_icon, bin && s.bin_rows.is_empty());
 
     // Windows Hello 按钮只在解锁界面出现(且要有可用的免密缓存)。
     // 注意:必须在**所有**形态下显式设置它 —— 只写 `if unlock` 的话,
@@ -648,23 +708,34 @@ fn layout_inner(hwnd: HWND) {
     if mode == Mode::Bin {
         let w = cw - pad * 2;
         ui::move_to(s.bin_title, pad, pad, w, scale(30));
-        ui::move_to(s.bin_hint, pad, pad + scale(34), w, scale(44));
-        let list_h = (ch - pad * 2 - scale(82) - scale(48)).max(scale(80));
-        ui::move_to(s.bin_list, pad, pad + scale(82), w, list_h);
-        ui::move_to(
-            s.bin_empty_hint,
-            pad,
-            pad + scale(82) + list_h / 2 - scale(12),
-            w,
-            scale(24),
-        );
-        let bin_percents: Vec<i32> = BIN_LIST_COLUMNS.iter().map(|c| c.2).collect();
-        set_list_columns(s.bin_list, w, &bin_percents);
-        let by = ch - pad - scale(36);
+        // 操作按钮上移到原来说明文字的位置,列表随之向上扩展。
+        let by = pad + scale(36);
         ui::move_to(s.bin_restore_btn, pad, by, scale(110), scale(34));
         ui::move_to(s.bin_purge_btn, pad + scale(122), by, scale(120), scale(34));
         ui::move_to(s.bin_empty_btn, pad + scale(254), by, scale(130), scale(34));
         ui::move_to(s.bin_back_btn, pad + scale(396), by, scale(120), scale(34));
+        let list_y = pad + scale(78);
+        let list_h = (ch - list_y - pad).max(scale(80));
+        ui::move_to(s.bin_list, pad, list_y, w, list_h);
+        // 同主列表:空状态提示内缩,避免盖住列表边框(见上面的注释)。
+        let overlay_x = pad + scale(3);
+        let overlay_w = (w - scale(6)).max(scale(40));
+        ui::move_to(
+            s.bin_empty_hint,
+            overlay_x,
+            list_y + list_h / 2 - scale(12),
+            overlay_w,
+            scale(24),
+        );
+        ui::move_to(
+            s.bin_empty_icon,
+            overlay_x,
+            list_y + list_h / 2 - scale(60),
+            overlay_w,
+            scale(40),
+        );
+        let bin_percents: Vec<i32> = BIN_LIST_COLUMNS.iter().map(|c| c.2).collect();
+        set_list_columns(s.bin_list, w, &bin_percents);
         return;
     }
 
@@ -693,7 +764,16 @@ fn layout_inner(hwnd: HWND) {
     );
 
     let search_y = margin + btn_h + scale(8);
-    ui::move_to(s.search, margin, search_y, cw - margin * 2, scale(28));
+    // 放大镜放在搜索框**外**的左侧:叠在框内会挡住占位文字。
+    let search_icon_w = scale(20);
+    ui::move_to(s.search_icon, margin, search_y + scale(4), search_icon_w, search_icon_w);
+    ui::move_to(
+        s.search,
+        margin + search_icon_w + scale(6),
+        search_y,
+        cw - margin * 2 - search_icon_w - scale(6),
+        scale(28),
+    );
 
     let top = search_y + scale(28) + scale(8);
     let status_h = scale(STATUS_H);
@@ -736,13 +816,23 @@ fn layout_inner(hwnd: HWND) {
     let list_h = (body_h - tabs_h - scale(4)).max(scale(60));
     // 列表占满整行宽度(开关只占页签那一行,不与列表抢位置)。
     ui::move_to(s.list, tabs_x, list_y, tabs_w, list_h);
-    // 空状态提示叠在列表正中:列表此时没有内容,不会互相遮挡。
+    // 空状态提示内缩几像素:它是漂浮在列表之上的,铺满整宽会把它盖在
+    // 列表自绘边框上的那一段擦成缺口(「边缘断裂」的根源)。
+    let overlay_x = tabs_x + scale(3);
+    let overlay_w = (tabs_w - scale(6)).max(scale(40));
     ui::move_to(
         s.empty_hint,
-        tabs_x,
+        overlay_x,
         list_y + list_h / 2 - scale(12),
-        tabs_w,
+        overlay_w,
         scale(24),
+    );
+    ui::move_to(
+        s.empty_icon,
+        overlay_x,
+        list_y + list_h / 2 - scale(60),
+        overlay_w,
+        scale(40),
     );
     if app::state().settings.column_widths.len() == MAIN_LIST_COLUMNS.len() {
         for (index, &logical_w) in app::state().settings.column_widths.iter().enumerate() {
@@ -896,7 +986,7 @@ fn refresh_filters(hwnd: HWND) {
         .map(|t| ui::text_width(hwnd, app::state().font, t))
         .max()
         .unwrap_or(0);
-    ui::listbox_set_horizontal_extent(s.tag_list, max_w + scale(12));
+    ui::listbox_set_horizontal_extent(s.tag_list, max_w + scale(20));
 }
 
 /// 筛选区与主列表总是一起重建:`refresh_filters` 必须在前,
@@ -952,6 +1042,7 @@ fn refresh_list(hwnd: HWND) {
 
     s.rows.clear();
     s.row_cells.clear();
+    s.row_chips.clear();
     for &(entry, _) in &items {
         s.rows.push(entry.id.clone());
         s.row_cells.push([
@@ -962,6 +1053,7 @@ fn refresh_list(hwnd: HWND) {
             entry.tags.join("、"),
             timefmt::local_string(entry.updated),
         ]);
+        s.row_chips.push(entry.tags.clone());
     }
     ui::listview_set_item_count(s.list, items.len());
     // 行数没变但内容变了(比如编辑条目)时控件不会自动重画,这里显式刷新。
@@ -980,18 +1072,22 @@ fn refresh_list(hwnd: HWND) {
     // 勾了「只看收藏」又确实没有收藏,就说明收藏;其余都是筛选没命中。
     let empty = s.rows.is_empty();
     if empty {
-        ui::set_text(
-            s.empty_hint,
-            if vault_empty {
-                "还没有条目。点「新建」开始记录。"
-            } else if ui::is_checked(s.fav_only_btn) && no_favorites {
-                "还没有收藏的条目。"
-            } else {
-                "没有符合条件的条目。"
-            },
-        );
+        let (hint, glyph) = if vault_empty {
+            ("还没有条目。点「新建」开始记录。", GLYPH_KEY)
+        } else if ui::is_checked(s.fav_only_btn) && no_favorites {
+            ("还没有收藏的条目。", GLYPH_STAR)
+        } else {
+            ("没有符合条件的条目。", GLYPH_SEARCH)
+        };
+        ui::set_text(s.empty_hint, hint);
+        ui::set_text(s.empty_icon, glyph);
     }
     ui::set_visible(s.empty_hint, empty);
+    show_empty_state(s.empty_hint, s.empty_icon, empty);
+    if empty {
+        // 行数变少/清空时旧网格线可能残留:整块擦除重画一次。
+        ui::listview_clean_repaint(s.list);
+    }
 
     update_status(hwnd);
 }
@@ -1038,7 +1134,11 @@ fn refresh_bin(hwnd: HWND) {
         ui::listview_select(s.bin_list, index as i32);
     }
 
-    ui::set_visible(s.bin_empty_hint, s.bin_rows.is_empty());
+    let empty = s.bin_rows.is_empty();
+    show_empty_state(s.bin_empty_hint, s.bin_empty_icon, empty);
+    if empty {
+        ui::listview_clean_repaint(s.bin_list);
+    }
 
     update_status(hwnd);
 }
@@ -1193,14 +1293,19 @@ pub fn on_command(hwnd: HWND, id: usize, code: u16) {
         ID_CREATE_PW if code == EN_CHANGE => {
             let s = st(hwnd);
             let value = ui::get_secret(s.create_pw);
-            let hint = strength_line(&value, "建议至少 12 位，混合大小写字母、数字与符号。");
+            let (hint, score) =
+                strength_line(&value, "建议至少 12 位，混合大小写字母、数字与符号。");
             ui::set_text(s.create_strength, &hint);
+            s.create_strength_score = score;
+            ui::invalidate(s.create_strength);
         }
         ID_CREATE_BTN if code == BN_CLICKED => create_vault(hwnd),
 
         // --- 列表 ---
         ID_NEW_BTN if code == BN_CLICKED => new_entry(hwnd),
         ID_SEARCH if code == EN_CHANGE => refresh_list(hwnd),
+        // 点在放大镜上等同于点搜索框。
+        ID_SEARCH_ICON => ui::set_focus(st(hwnd).search),
         ID_FAV_ONLY_BTN if code == BN_CLICKED => {
             save_favorites_only(hwnd);
             refresh_list(hwnd);
@@ -1286,6 +1391,193 @@ pub fn on_command(hwnd: HWND, id: usize, code: u16) {
     }
 }
 
+/// 「标签」列的微标签绘制:一排描边小圆角块,选中行改用白色描边与文字。
+///
+/// 单元格放不下时在末尾画「…」;行内没有标签就保持空白。
+fn paint_tag_chips(
+    hwnd: HWND,
+    list: HWND,
+    hdc: windows::Win32::Graphics::Gdi::HDC,
+    row_rect: &RECT,
+    row: usize,
+) {
+    use windows::Win32::Foundation::COLORREF;
+    use windows::Win32::Graphics::Gdi::{
+        CreatePen, DeleteObject, DrawTextW, GetStockObject, RoundRect, SelectObject, SetBkMode,
+        SetTextColor, BACKGROUND_MODE, DRAW_TEXT_FORMAT, HGDIOBJ, NULL_BRUSH, PS_SOLID,
+    };
+
+    let s = st(hwnd);
+    let Some(tags) = s.row_chips.get(row) else {
+        return;
+    };
+    if tags.is_empty() || s.grid_columns.len() <= TAGS_COLUMN {
+        return;
+    }
+
+    // 标签列左右边界 = 行左缘 + 前面几列的宽度之和。
+    let mut left = row_rect.left;
+    for width in &s.grid_columns[..TAGS_COLUMN] {
+        left += *width;
+    }
+    let right = left + s.grid_columns[TAGS_COLUMN];
+
+    let selected = ui::send_msg(list, LVM_GETITEMSTATE, row, LVIS_SELECTED as isize) as u32
+        & LVIS_SELECTED
+        != 0;
+    let (border, text_color) = if selected {
+        (ACCENT_TEXT, ACCENT_TEXT)
+    } else {
+        (CHIP_BORDER, CHIP_TEXT)
+    };
+
+    let font = app::state().font;
+    let pad = scale(6);
+    let gap = scale(4);
+    let chip_h = scale(20);
+    let y = row_rect.top + (row_rect.bottom - row_rect.top - chip_h) / 2;
+    let limit = right - scale(6);
+    let mut x = left + scale(6);
+
+    unsafe {
+        let pen = CreatePen(PS_SOLID, 1, COLORREF(border));
+        let old_pen = SelectObject(hdc, HGDIOBJ(pen.0));
+        let old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+        SetBkMode(hdc, BACKGROUND_MODE(1)); // TRANSPARENT
+        SetTextColor(hdc, COLORREF(text_color));
+        let old_font = SelectObject(hdc, HGDIOBJ(font.0));
+
+        let mut overflow = false;
+        for tag in tags {
+            let chip_w = ui::text_width(list, font, tag).max(1) + pad * 2;
+            if x + chip_w > limit {
+                overflow = true;
+                break;
+            }
+            let _ = RoundRect(hdc, x, y, x + chip_w, y + chip_h, scale(6), scale(6));
+            let mut wide: Vec<u16> = tag.encode_utf16().collect();
+            let mut cell = RECT {
+                left: x,
+                top: y,
+                right: x + chip_w,
+                bottom: y + chip_h,
+            };
+            DrawTextW(
+                hdc,
+                &mut wide,
+                &mut cell,
+                DRAW_TEXT_FORMAT(DT_CENTER | DT_VCENTER | DT_SINGLELINE),
+            );
+            x += chip_w + gap;
+        }
+        if overflow && x + scale(10) <= limit {
+            let mut wide: Vec<u16> = "…".encode_utf16().collect();
+            let mut cell = RECT {
+                left: x,
+                top: y,
+                right: limit,
+                bottom: y + chip_h,
+            };
+            DrawTextW(
+                hdc,
+                &mut wide,
+                &mut cell,
+                DRAW_TEXT_FORMAT(DT_LEFT | DT_VCENTER | DT_SINGLELINE),
+            );
+        }
+
+        SelectObject(hdc, old_font);
+        SelectObject(hdc, old_brush);
+        SelectObject(hdc, old_pen);
+        let _ = DeleteObject(HGDIOBJ(pen.0));
+    }
+}
+
+/// 左侧标签列表的自绘:每一项是一个圆角小芯片(与列表里的标签同款画法);
+/// 当前筛选中的那一项用主色填充,其余是描边样式。
+pub fn on_draw_item(lparam: LPARAM) -> isize {
+    use windows::Win32::Foundation::COLORREF;
+    use windows::Win32::Graphics::Gdi::{
+        CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, FillRect, GetStockObject, RoundRect,
+        SelectObject, SetBkMode, SetTextColor, BACKGROUND_MODE, DRAW_TEXT_FORMAT, HGDIOBJ,
+        NULL_BRUSH, PS_SOLID,
+    };
+    use windows::Win32::UI::Controls::{DRAWITEMSTRUCT, ODS_SELECTED};
+
+    let dis = unsafe { &*(lparam.0 as *const DRAWITEMSTRUCT) };
+    if dis.CtlID != ID_TAG_LIST as u32 || dis.itemID == u32::MAX {
+        return 0;
+    }
+    let list = dis.hwndItem;
+    let text = ui::listbox_text(list, dis.itemID as i32);
+    let selected = dis.itemState.0 & ODS_SELECTED.0 != 0;
+    let rc = dis.rcItem;
+
+    let font = app::state().font;
+    let pad = scale(7);
+    let chip_h = scale(20);
+    let x = rc.left + scale(2);
+    let y = rc.top + ((rc.bottom - rc.top) - chip_h) / 2;
+    let w = ui::text_width(list, font, &text).max(1) + pad * 2;
+
+    unsafe {
+        // 行底色:整行铺白,芯片之外保持列表背景。
+        let bg = CreateSolidBrush(COLORREF(0x00FF_FFFF));
+        FillRect(dis.hDC, &rc, bg);
+        let _ = DeleteObject(HGDIOBJ(bg.0));
+
+        let old_font = SelectObject(dis.hDC, HGDIOBJ(font.0));
+        if selected {
+            let brush = CreateSolidBrush(COLORREF(ACCENT));
+            let pen = CreatePen(PS_SOLID, 1, COLORREF(ACCENT));
+            let old_brush = SelectObject(dis.hDC, HGDIOBJ(brush.0));
+            let old_pen = SelectObject(dis.hDC, HGDIOBJ(pen.0));
+            let _ = RoundRect(dis.hDC, x, y, x + w, y + chip_h, scale(8), scale(8));
+            SelectObject(dis.hDC, old_pen);
+            SelectObject(dis.hDC, old_brush);
+            let _ = DeleteObject(HGDIOBJ(pen.0));
+            let _ = DeleteObject(HGDIOBJ(brush.0));
+        } else {
+            let pen = CreatePen(PS_SOLID, 1, COLORREF(CHIP_BORDER));
+            let old_pen = SelectObject(dis.hDC, HGDIOBJ(pen.0));
+            let old_brush = SelectObject(dis.hDC, GetStockObject(NULL_BRUSH));
+            let _ = RoundRect(dis.hDC, x, y, x + w, y + chip_h, scale(8), scale(8));
+            SelectObject(dis.hDC, old_brush);
+            SelectObject(dis.hDC, old_pen);
+            let _ = DeleteObject(HGDIOBJ(pen.0));
+        }
+
+        SetBkMode(dis.hDC, BACKGROUND_MODE(1)); // TRANSPARENT
+        SetTextColor(dis.hDC, COLORREF(if selected { ACCENT_TEXT } else { CHIP_TEXT }));
+        let mut wide: Vec<u16> = text.encode_utf16().collect();
+        let mut cell = RECT {
+            left: x,
+            top: y,
+            right: x + w,
+            bottom: y + chip_h,
+        };
+        DrawTextW(
+            dis.hDC,
+            &mut wide,
+            &mut cell,
+            DRAW_TEXT_FORMAT(DT_CENTER | DT_VCENTER | DT_SINGLELINE),
+        );
+        SelectObject(dis.hDC, old_font);
+    }
+    0
+}
+
+/// `WM_MEASUREITEM`:标签列表的固定行高(比文字高一点,给圆角留呼吸)。
+pub fn on_measure_item(lparam: LPARAM) -> isize {
+    use windows::Win32::UI::Controls::MEASUREITEMSTRUCT;
+
+    let mis = unsafe { &mut *(lparam.0 as *mut MEASUREITEMSTRUCT) };
+    if mis.CtlID == ID_TAG_LIST as u32 {
+        mis.itemHeight = scale(26).max(1) as u32;
+    }
+    0
+}
+
 pub fn on_notify(hwnd: HWND, lparam: LPARAM) -> isize {
     let header = unsafe { &*(lparam.0 as *const NMHDR) };
     let code = header.code as i32;
@@ -1324,6 +1616,13 @@ pub fn on_notify(hwnd: HWND, lparam: LPARAM) -> isize {
         if stage == CDDS_ITEMPOSTPAINT {
             let hdc = lvcd.nmcd.hdc;
             let rc = lvcd.nmcd.rc;
+            // 控件偶尔会在某些内部重绘里送来一个空的行矩形(实测 rc=(0,0,0,0),
+            // 鼠标划过时偶发):照常绘制会把网格线和标签芯片画到列表顶部,
+            // 留下一个错位的「标签残影」。空矩形直接跳过 —— 没有可画的区域,
+            // 也就没有可残留的像素。
+            if rc.right <= rc.left || rc.bottom <= rc.top {
+                return CDRF_DODEFAULT as isize;
+            }
             let s = st(hwnd);
             let brush = s.grid_brush;
 
@@ -1353,6 +1652,12 @@ pub fn on_notify(hwnd: HWND, lparam: LPARAM) -> isize {
                     FillRect(hdc, &col_line, brush);
                 }
             }
+
+            // 3. 「标签」列整列自绘微标签:文本在 LVN_GETDISPINFO 里被置空,
+            //    这里按缓存的列宽在单元格内排一排描边小圆角块。
+            if header.hwndFrom == list {
+                paint_tag_chips(hwnd, header.hwndFrom, hdc, &rc, lvcd.nmcd.dwItemSpec);
+            }
             return CDRF_DODEFAULT as isize;
         }
         return CDRF_DODEFAULT as isize;
@@ -1371,6 +1676,9 @@ pub fn on_notify(hwnd: HWND, lparam: LPARAM) -> isize {
             // 一律带界检查:陈旧索引(模态对话框期间库可能变)宁可显示空白,也不能 panic。
             let text = if header.hwndFrom == bin_list {
                 s.bin_row_cells.get(row).and_then(|cells| cells.get(col))
+            } else if col == TAGS_COLUMN {
+                // 「标签」列整列自绘微标签(见 CDDS_ITEMPOSTPAINT),不提供文本。
+                None
             } else {
                 s.row_cells.get(row).and_then(|cells| cells.get(col))
             }
@@ -2049,9 +2357,6 @@ fn after_unlock(hwnd: HWND) {
 
     refresh_all(hwnd);
     apply_mode(hwnd);
-
-    // 上面几个都会重新 st(hwnd),所以这里重新取,别用上面那个 s。
-    ui::set_focus(st(hwnd).search);
 }
 
 fn create_vault(hwnd: HWND) {
@@ -2113,9 +2418,12 @@ fn lock_vault(hwnd: HWND, may_prompt: bool) {
         s.rows.clear();
         s.bin_rows.clear();
         s.row_cells.clear();
+        s.row_chips.clear();
         s.bin_row_cells.clear();
         ui::listview_set_item_count(s.list, 0);
         ui::listview_set_item_count(s.bin_list, 0);
+        ui::listview_clean_repaint(s.list);
+        ui::listview_clean_repaint(s.bin_list);
         // 空状态提示不必单独处理:紧接着的 apply_mode 会按新形态统一设置显隐。
         ui::set_text(s.status, "");
     }
@@ -2167,13 +2475,23 @@ pub(crate) fn save_failure_inline(e: &crate::error::VaultError) -> String {
     }
 }
 
-/// 强度提示行(创建表单与条目编辑器共用)。空密码时用调用方给的提示语。
-pub(crate) fn strength_line(value: &str, empty_hint: &str) -> String {
+/// 强度提示行 + 分档(创建表单与条目编辑器共用)。空密码时用调用方给的提示语。
+pub(crate) fn strength_line(value: &str, empty_hint: &str) -> (String, Option<u8>) {
     if value.is_empty() {
-        return empty_hint.to_string();
+        return (empty_hint.to_string(), None);
     }
     let r = strength::evaluate(value);
-    format!("强度：{} · {}", r.label, r.hint)
+    (format!("强度：{} · {}", r.label, r.hint), Some(r.score))
+}
+
+/// 强度行的取色:0/1 弱红、2 中橙、3+ 强绿;None(空)用正文色。
+pub(crate) fn strength_color(score: Option<u8>) -> u32 {
+    match score {
+        None => TEXT,
+        Some(0) | Some(1) => ERROR_TEXT,
+        Some(2) => STRENGTH_MID,
+        _ => STRENGTH_STRONG,
+    }
 }
 
 /// 新登录密码的通用校验(创建 / 修改 / 重设三条路径共用)。

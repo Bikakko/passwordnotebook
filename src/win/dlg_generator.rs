@@ -159,7 +159,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     };
     ctl("BUTTON", "重新生成", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_REGEN, (20, 308, 116, 36));
     ctl("BUTTON", "复制", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_COPY, (144, 308, 90, 36));
-    let use_btn = ctl("BUTTON", "使用此密码", WS_TABSTOP | use_style, 0, hwnd, ID_USE, (242, 308, 130, 36));
+    let use_btn = ui::accent_button(hwnd, "使用此密码", use_style, ID_USE, (242, 308, 130, 36));
     if !s.use_button {
         ui::set_visible(use_btn, false);
     }

@@ -16,6 +16,9 @@ pub struct AppState {
     pub vault: VaultService,
     pub font: HFONT,
     pub font_bold: HFONT,
+    /// 图标字体(空状态大图标 / 搜索框放大镜);系统缺图标字体时为空句柄。
+    pub font_icon_lg: HFONT,
+    pub font_icon_sm: HFONT,
     pub dpi: u32,
     pub main: HWND,
     /// 主窗口当前处于哪种形态。

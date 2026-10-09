@@ -966,12 +966,16 @@ fn preview_host(
             vault: crate::vault::VaultService::new(),
             font: Default::default(),
             font_bold: Default::default(),
+            font_icon_lg: Default::default(),
+            font_icon_sm: Default::default(),
             dpi,
             main: HWND::default(),
             mode,
         });
         app::state().font = ui::create_ui_font(false, dpi);
         app::state().font_bold = ui::create_ui_font(true, dpi);
+        app::state().font_icon_lg = ui::create_icon_font(dpi, 40);
+        app::state().font_icon_sm = ui::create_icon_font(dpi, 14);
     }
 
     let _ = ui::register_class("PnbPreviewHost", host_proc);

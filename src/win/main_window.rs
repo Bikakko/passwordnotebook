@@ -152,6 +152,8 @@ fn setup_state() {
         vault: crate::vault::VaultService::new(),
         font: Default::default(),
         font_bold: Default::default(),
+        font_icon_lg: Default::default(),
+        font_icon_sm: Default::default(),
         dpi: 96,
         main: HWND::default(),
         mode,
@@ -164,12 +166,16 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             let dpi = app::state().dpi.max(96);
             let font = ui::create_ui_font(false, dpi);
             let font_bold = ui::create_ui_font(true, dpi);
+            let font_icon_lg = ui::create_icon_font(dpi, 40);
+            let font_icon_sm = ui::create_icon_font(dpi, 14);
 
             {
                 let state = app::state();
                 state.dpi = dpi;
                 state.font = font;
                 state.font_bold = font_bold;
+                state.font_icon_lg = font_icon_lg;
+                state.font_icon_sm = font_icon_sm;
                 state.main = hwnd;
             }
 
@@ -182,9 +188,13 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             let state = app::state();
             ui::delete_font(state.font);
             ui::delete_font(state.font_bold);
+            ui::delete_font(state.font_icon_lg);
+            ui::delete_font(state.font_icon_sm);
             state.dpi = new_dpi.max(96);
             state.font = ui::create_ui_font(false, state.dpi);
             state.font_bold = ui::create_ui_font(true, state.dpi);
+            state.font_icon_lg = ui::create_icon_font(state.dpi, 40);
+            state.font_icon_sm = ui::create_icon_font(state.dpi, 14);
 
             main_ui::apply_fonts(hwnd);
             main_ui::layout(hwnd);
@@ -209,6 +219,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             main_ui::on_command(hwnd, id, code);
             LRESULT(0)
         }
+        WM_DRAWITEM => LRESULT(main_ui::on_draw_item(lparam)),
+        WM_MEASUREITEM => LRESULT(main_ui::on_measure_item(lparam)),
         WM_NOTIFY => LRESULT(main_ui::on_notify(hwnd, lparam)),
         WM_CTLCOLORSTATIC => LRESULT(main_ui::on_ctlcolor_static(hwnd, wparam.0, lparam.0)),
         TSM_TAB_CHANGED => {

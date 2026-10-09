@@ -81,6 +81,8 @@ struct EditorState {
     password: HWND,
     show_pw: HWND,
     strength: HWND,
+    /// 强度行的分档(None = 未填写;决定文字颜色)。
+    strength_score: Option<u8>,
     url: HWND,
     api_key: HWND,
     api_endpoint: HWND,
@@ -116,6 +118,7 @@ pub fn show(
         password: HWND::default(),
         show_pw: HWND::default(),
         strength: HWND::default(),
+        strength_score: None,
         url: HWND::default(),
         api_key: HWND::default(),
         api_endpoint: HWND::default(),
@@ -143,6 +146,19 @@ fn st(hwnd: HWND) -> &'static mut EditorState {
     unsafe { ui::state_ref::<EditorState>(hwnd) }
 }
 
+/// `WM_CTLCOLORSTATIC`:强度行按分档着色,其余标签照旧透明。
+fn on_ctlcolor_static(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> isize {
+    use windows::Win32::Graphics::Gdi::HDC;
+
+    let control = HWND(lparam.0 as *mut std::ffi::c_void);
+    let s = st(hwnd);
+    if control == s.strength {
+        let color = super::main_ui::strength_color(s.strength_score);
+        return ui::paint_static_label(HDC(wparam.0 as *mut std::ffi::c_void), color);
+    }
+    ui::static_label_reply(wparam.0)
+}
+
 /// 光标停在标签区上时,把滚轮消息转给容器(与系统的悬停滚动开关无关)。
 fn forward_wheel_to_tag_box(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
     let tag_box = st(hwnd).tag_box;
@@ -161,7 +177,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             on_create(hwnd, lparam);
             LRESULT(0)
         }
-        WM_CTLCOLORSTATIC => LRESULT(ui::static_label_reply(wparam.0)),
+        WM_CTLCOLORSTATIC => LRESULT(on_ctlcolor_static(hwnd, wparam, lparam)),
         WM_COMMAND => {
             let (id, code) = dialog::command_params(wparam);
             on_command(hwnd, id, code);
@@ -220,7 +236,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     // 容器自己不占 Tab 停靠点(WS_EX_CONTROLPARENT 让 Tab 直接进入复选框);
     // WS_CLIPCHILDREN 防止滚动挪动子控件时父子互相擦画导致闪烁。
     s.tag_box = ctl(
-        TAG_BOX_CLASS,
+        "PnbTagBox",
         "",
         WS_VSCROLL | WS_BORDER | WS_CLIPCHILDREN,
         WS_EX_CLIENTEDGE | WS_EX_CONTROLPARENT,
@@ -241,7 +257,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     );
 
     s.error = label(hwnd, "", ID_ERROR, (20, 378, 760, 38));
-    ctl("BUTTON", "保存", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, hwnd, ID_SAVE, (572, 420, BUTTON_W, 36));
+    ui::accent_button(hwnd, "保存", BS_DEFPUSHBUTTON, ID_SAVE, (572, 420, BUTTON_W, 36));
     ctl("BUTTON", "取消", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CANCEL, (680, 420, BUTTON_W, 36));
 
     // 填入现有数据。
@@ -506,8 +522,10 @@ fn update_strength(hwnd: HWND) {
     let s = st(hwnd);
     let value = ui::get_secret(s.password);
     // 还没填密码时不显示任何强度说明(空行比「尚未填写密码」这种废话干净)。
-    let text = super::main_ui::strength_line(&value, "");
+    let (text, score) = super::main_ui::strength_line(&value, "");
     ui::set_text(s.strength, &text);
+    s.strength_score = score;
+    ui::invalidate(s.strength);
 }
 
 fn on_command(hwnd: HWND, id: usize, code: u16) {

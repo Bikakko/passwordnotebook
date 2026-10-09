@@ -13,6 +13,7 @@ pub const WS_MAXIMIZEBOX: u32 = 0x0001_0000;
 pub const WS_CHILD: u32 = 0x4000_0000;
 pub const WS_VISIBLE: u32 = 0x1000_0000;
 pub const WS_CLIPCHILDREN: u32 = 0x0200_0000;
+pub const WS_CLIPSIBLINGS: u32 = 0x0400_0000;
 pub const WS_BORDER: u32 = 0x0080_0000;
 pub const WS_VSCROLL: u32 = 0x0020_0000;
 pub const WS_HSCROLL: u32 = 0x0010_0000;
@@ -46,11 +47,17 @@ pub const BS_TYPEMASK: u32 = 0x0000_000F;
 // ---------- 下拉框 / 列表框 ----------
 pub const CBS_DROPDOWNLIST: u32 = 0x0003;
 pub const LBS_NOTIFY: u32 = 0x0001;
+/// 自绘列表项(固定行高,配合 WM_MEASUREITEM / WM_DRAWITEM)。
+pub const LBS_OWNERDRAWFIXED: u32 = 0x0010;
+/// 让列表框继续保存项文本(自绘时仍需 LB_GETTEXT 取标签)。
+pub const LBS_HASSTRINGS: u32 = 0x0040;
 pub const LBS_NOINTEGRALHEIGHT: u32 = 0x0100;
 
 // ---------- 静态文本 ----------
 pub const SS_LEFT: u32 = 0x0000_0000;
 pub const SS_CENTER: u32 = 0x0000_0001;
+/// 让静态控件把点击通知(WM_COMMAND/STN_CLICKED)发给父窗口。
+pub const SS_NOTIFY: u32 = 0x0100;
 
 // ---------- ListView ----------
 pub const LVS_REPORT: u32 = 0x0001;
@@ -62,9 +69,14 @@ pub const LVS_EX_GRIDLINES: u32 = 0x0000_0001;
 pub const LVS_EX_FULLROWSELECT: u32 = 0x0000_0020;
 
 // ---------- 窗口消息 ----------
+pub const WM_DRAWITEM: u32 = 0x002B;
+pub const WM_MEASUREITEM: u32 = 0x002C;
 pub const WM_CREATE: u32 = 0x0001;
 pub const WM_DESTROY: u32 = 0x0002;
 pub const WM_SIZE: u32 = 0x0005;
+pub const WM_SETFOCUS: u32 = 0x0007;
+pub const WM_KILLFOCUS: u32 = 0x0008;
+pub const WM_ENABLE: u32 = 0x000A;
 pub const WM_CLOSE: u32 = 0x0010;
 pub const WM_PAINT: u32 = 0x000F;
 pub const WM_ERASEBKGND: u32 = 0x0014;
@@ -78,8 +90,12 @@ pub const LVM_HITTEST: u32 = LVM_FIRST + 18;
 pub const WM_TIMER: u32 = 0x0113;
 pub const WM_NOTIFY: u32 = 0x004E;
 pub const WM_KEYDOWN: u32 = 0x0100;
+pub const WM_KEYUP: u32 = 0x0101;
+pub const WM_MOUSEMOVE: u32 = 0x0200;
 pub const WM_LBUTTONDOWN: u32 = 0x0201;
+pub const WM_LBUTTONUP: u32 = 0x0202;
 pub const WM_LBUTTONDBLCLK: u32 = 0x0203;
+pub const WM_MOUSELEAVE: u32 = 0x02A3;
 pub const WM_COPY: u32 = 0x0301;
 pub const WM_VSCROLL: u32 = 0x0115;
 pub const WM_MOUSEWHEEL: u32 = 0x020A;
@@ -94,6 +110,8 @@ pub const SB_THUMBPOSITION: usize = 4;
 pub const SB_THUMBTRACK: usize = 5;
 /// 回车键(WM_KEYDOWN 的 wParam)。
 pub const VK_RETURN: u32 = 0x0D;
+/// 空格键(按钮键盘激活)。
+pub const VK_SPACE: u32 = 0x20;
 pub const WM_DPICHANGED: u32 = 0x02E0;
 pub const WM_APP: u32 = 0x8000;
 /// 会话状态变化(需要 WTSRegisterSessionNotification)。
@@ -123,10 +141,8 @@ pub const LB_SETHORIZONTALEXTENT: u32 = 0x0194;
 
 pub const EM_SETSEL: u32 = 0x00B1;
 pub const EM_SETPASSWORDCHAR: u32 = 0x00CC;
-pub const EM_SETMARGINS: u32 = 0x00D4;
-/// EM_SETMARGINS 的 wParam:左右内边距一起设置。
-pub const EC_LEFTMARGIN: usize = 0x0001;
-pub const EC_RIGHTMARGIN: usize = 0x0002;
+/// 给编辑框设置占位提示文本(wParam=1 表示获得焦点时也显示)。
+pub const EM_SETCUEBANNER: u32 = 0x1501;
 
 pub const LVM_FIRST: u32 = 0x1000;
 pub const LVM_GETNEXTITEM: u32 = LVM_FIRST + 12;
@@ -134,6 +150,10 @@ pub const LVM_INSERTCOLUMNW: u32 = LVM_FIRST + 97;
 pub const LVM_SETEXTENDEDLISTVIEWSTYLE: u32 = LVM_FIRST + 54;
 pub const LVM_SETITEMCOUNT: u32 = LVM_FIRST + 47;
 pub const LVM_SETITEMSTATE: u32 = LVM_FIRST + 43;
+/// 取某一列表项的状态位(LVM_FIRST + 44)。
+pub const LVM_GETITEMSTATE: u32 = LVM_FIRST + 44;
+/// 列表项状态:被选中(LVM_GETITEMSTATE 的掩码)。
+pub const LVIS_SELECTED: u32 = 0x0002;
 pub const LVM_GETCOLUMNWIDTH: u32 = LVM_FIRST + 29;
 pub const LVM_SETCOLUMNWIDTH: u32 = LVM_FIRST + 30;
 pub const LVM_GETHEADER: u32 = LVM_FIRST + 31;
@@ -196,6 +216,9 @@ pub const SW_HIDE: i32 = 0;
 pub const SW_RESTORE: i32 = 9;
 pub const SW_SHOWNORMAL: i32 = 1;
 pub const SWP_NOZORDER: u32 = 0x0004;
+pub const SWP_NOSIZE: u32 = 0x0001;
+pub const SWP_NOMOVE: u32 = 0x0002;
+pub const SWP_NOACTIVATE: u32 = 0x0010;
 
 pub const MB_OK: u32 = 0x0000_0000;
 pub const MB_YESNO: u32 = 0x0000_0004;

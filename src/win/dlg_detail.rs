@@ -59,8 +59,6 @@ const MARGIN: i32 = 20;
 const LABEL_W: i32 = 96;
 const VALUE_X: i32 = 120;
 const VALUE_W: i32 = 460;
-/// 只读字段的内边距:去掉边框后靠它让文字与左右边缘留出衬距(逻辑像素)。
-const VALUE_PAD: i32 = 6;
 const FIELD_H: i32 = 30;
 const NOTES_H: i32 = 90;
 const BUTTON_H: i32 = 36;
@@ -171,12 +169,12 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
     for (index, &(name, _, sensitive, multiline, click_copy)) in FIELDS.iter().enumerate() {
         let y = ROW_Y0 + index as i32 * ROW_PITCH;
         label(hwnd, name, ID_LABEL_BASE + index, (MARGIN, y + 4, LABEL_W, 22));
-        // 只读字段不画边框、以浅灰平底呈现:凹陷边框 + 白底才是「可编辑」的样子,
-        // 这里的字段只负责展示(其中五行点击即复制)。
+        // 只读字段按系统文本框呈现(带边框);底色由 WM_CTLCOLORSTATIC 画成
+        // 浅灰,一眼可辨「不可编辑」。
         let mut style = if multiline {
-            WS_TABSTOP | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL
+            WS_BORDER | WS_TABSTOP | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL
         } else {
-            WS_TABSTOP | ES_READONLY | ES_AUTOHSCROLL
+            WS_BORDER | WS_TABSTOP | ES_READONLY | ES_AUTOHSCROLL
         };
         // 遮蔽依靠 EM_SETPASSWORDCHAR(与编辑器同一套开关);带上 ES_PASSWORD,
         // 该消息才会生效。取消遮蔽时把它设回 0,文本就正常显示。
@@ -188,12 +186,11 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
             "EDIT",
             "",
             style,
-            0,
+            WS_EX_CLIENTEDGE,
             hwnd,
             ID_VALUE_BASE + index,
             (VALUE_X, y, VALUE_W, height),
         );
-        ui::set_edit_margins(value, VALUE_PAD);
         // 可点击复制的行挂子类化(连点同一个框也照样复制);标题与备注不挂。
         if click_copy {
             let _ = unsafe { SetWindowSubclass(value, Some(value_proc), index, hwnd.0 as usize) };

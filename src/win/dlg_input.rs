@@ -80,7 +80,7 @@ fn on_create(hwnd: HWND, lparam: LPARAM) {
         ID_EDIT,
         (20, 46, 420, 30),
     );
-    ctl("BUTTON", "确定", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, hwnd, ID_OK, (232, 96, BUTTON_W, 36));
+    ui::accent_button(hwnd, "确定", BS_DEFPUSHBUTTON, ID_OK, (232, 96, BUTTON_W, 36));
     ctl("BUTTON", "取消", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, ID_CANCEL, (340, 96, BUTTON_W, 36));
 
     let font = app::state().font;

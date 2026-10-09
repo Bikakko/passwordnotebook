@@ -82,15 +82,7 @@ unsafe extern "system" fn code_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                 C_CONFIRM,
                 (20, 192, 460, 30),
             );
-            s.ok = ctl(
-                "BUTTON",
-                "完成",
-                WS_TABSTOP | BS_DEFPUSHBUTTON,
-                0,
-                hwnd,
-                C_OK,
-                (440, 234, BUTTON_W, 36),
-            );
+            s.ok = ui::accent_button(hwnd, "完成", BS_DEFPUSHBUTTON, C_OK, (440, 234, BUTTON_W, 36));
             ui::enable(s.ok, false);
 
             let font = app::state().font;
@@ -249,7 +241,7 @@ unsafe extern "system" fn recover_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
                 (20, 224, 500, 30),
             );
             s.error = ctl("STATIC", "", SS_LEFT, 0, hwnd, R_ERROR, (20, 262, 500, 40));
-            s.submit = ctl("BUTTON", "重设登录密码并解锁", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, hwnd, R_SUBMIT, (212, 312, 200, 36));
+            s.submit = ui::accent_button(hwnd, "重设登录密码并解锁", BS_DEFPUSHBUTTON, R_SUBMIT, (212, 312, 200, 36));
             ctl("BUTTON", "取消", WS_TABSTOP | BS_PUSHBUTTON, 0, hwnd, R_CANCEL, (420, 312, BUTTON_W, 36));
 
             let font = app::state().font;

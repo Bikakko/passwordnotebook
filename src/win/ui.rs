@@ -20,7 +20,7 @@ use windows::Win32::UI::Controls::{
     LVCOLUMNW_MASK, LVCF_FMT, LVCF_SUBITEM, LVCF_TEXT, LVCF_WIDTH, LVIS_FOCUSED, LVIS_SELECTED,
     LVITEMW,
 };
-use windows::Win32::UI::Shell::SetWindowSubclass;
+use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -247,6 +247,34 @@ pub fn set_visible(hwnd: HWND, visible: bool) {
     show_window(hwnd, if visible { SW_SHOW } else { SW_HIDE });
 }
 
+/// 显示/隐藏「漂浮」在其它控件之上的提示窗口。
+///
+/// 显示时必须把它提到兄弟窗口最顶层并重绘 —— 否则底下的列表一重绘就会把它
+/// 整个盖掉(切页签后空状态提示消失、以及旧网格线残留都出在这类覆盖关系上)。
+pub fn set_overlay_visible(hwnd: HWND, visible: bool) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_TOP, SET_WINDOW_POS_FLAGS,
+    };
+
+    if visible {
+        unsafe {
+            let _ = SetWindowPos(
+                hwnd,
+                Some(HWND_TOP),
+                0,
+                0,
+                0,
+                0,
+                SET_WINDOW_POS_FLAGS(SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE),
+            );
+        }
+        show_window(hwnd, SW_SHOW);
+        invalidate(hwnd);
+    } else {
+        show_window(hwnd, SW_HIDE);
+    }
+}
+
 pub fn enable(hwnd: HWND, enabled: bool) {
     unsafe {
         let _ = EnableWindow(hwnd, enabled);
@@ -268,12 +296,10 @@ pub fn client_size(hwnd: HWND) -> (i32, i32) {
     (rect.right - rect.left, rect.bottom - rect.top)
 }
 
-/// 设置编辑框的左右内边距(逻辑像素)。
-///
-/// 只读字段不画边框(见 dlg_detail),靠这里让文字不贴边。
-pub fn set_edit_margins(hwnd: HWND, horizontal: i32) {
-    let px = (scale(horizontal) as isize) & 0xFFFF;
-    send_msg(hwnd, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, px | (px << 16));
+/// 给编辑框设置占位提示(未输入时的灰字);获得焦点后隐藏。
+pub fn set_cue_banner(hwnd: HWND, text: &str) {
+    let w = Wz::new(text);
+    send_msg(hwnd, EM_SETCUEBANNER, 0, w.0.as_ptr() as isize);
 }
 
 /// 切换编辑框的密码字符:`None` 表示明文显示。
@@ -577,10 +603,23 @@ pub fn listview_set_item_count(hwnd: HWND, count: usize) {
     send_msg(hwnd, LVM_SETITEMCOUNT, count, 0);
 }
 
-/// 让列表视图整块重画(不擦背景,避免闪烁)。
+/// 让列表视图整块重画(不擦背景,避免闪烁;常规刷新用)。
 pub fn listview_refresh(hwnd: HWND) {
     unsafe {
         let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+}
+
+/// 整块「擦除 + 立即重画」:用在清空 / 行数变少的时刻,把旧行留下的
+/// 网格线、选中底纹等残影一次性清干净。
+pub fn listview_clean_repaint(hwnd: HWND) {
+    unsafe {
+        let _ = RedrawWindow(
+            Some(hwnd),
+            None,
+            None,
+            RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN,
+        );
     }
 }
 
@@ -759,12 +798,90 @@ pub fn create_ui_font(bold: bool, dpi: u32) -> HFONT {
         }
         lf.lfQuality = CLEARTYPE_QUALITY;
 
+        // 界面正文固定用「黑体」族:部分机器的系统消息字体是衬线(宋体),
+        // 混进自绘控件里很难看。优先雅黑,机器都没有时才退回系统消息字体。
+        for face in ["Microsoft YaHei UI", "Microsoft YaHei"] {
+            let mut candidate = lf;
+            candidate.lfFaceName.fill(0);
+            for (slot, code) in candidate.lfFaceName.iter_mut().zip(face.encode_utf16()) {
+                *slot = code;
+            }
+            let font = CreateFontIndirectW(&candidate);
+            if !font.is_invalid() && font_face_matches(font, face) {
+                return font;
+            }
+            delete_font(font);
+        }
+
         CreateFontIndirectW(&lf)
     }
 }
 
 /// 字号相对系统默认的放大倍数(1.0 = 系统标准 9pt)。
 const FONT_SCALE: f32 = 1.3;
+
+/// 图标字体首选(Win11);没有就退回 MDL2(Win10 1607+)。
+const ICON_FACE_FLUENT: &str = "Segoe Fluent Icons";
+const ICON_FACE_MDL2: &str = "Segoe MDL2 Assets";
+
+/// 创建图标字体(按逻辑像素给字号)。系统两个图标字体都没有时返回空字体,
+/// 调用方据此跳过图标绘制 —— 宁可不画,也不能画成方框乱码。
+pub fn create_icon_font(dpi: u32, logical_px: i32) -> HFONT {
+    for face in [ICON_FACE_FLUENT, ICON_FACE_MDL2] {
+        let font = create_named_font(face, dpi, logical_px);
+        if font.is_invalid() {
+            continue;
+        }
+        if font_face_matches(font, face) {
+            return font;
+        }
+        delete_font(font);
+    }
+    HFONT::default()
+}
+
+/// 按字体名创建字体。`CreateFontIndirectW` 对不存在的字体名会静默替换,
+/// 创建后要用 [`font_face_matches`] 复核。
+fn create_named_font(face: &str, dpi: u32, logical_px: i32) -> HFONT {
+    use windows::Win32::Graphics::Gdi::DEFAULT_CHARSET;
+
+    let height = -(((logical_px as f32) * dpi as f32 / 96.0).round() as i32);
+    let mut lf = LOGFONTW {
+        lfHeight: height,
+        lfWeight: 400, // FW_NORMAL
+        lfCharSet: DEFAULT_CHARSET,
+        lfQuality: CLEARTYPE_QUALITY,
+        ..Default::default()
+    };
+    for (slot, code) in lf.lfFaceName.iter_mut().zip(face.encode_utf16()) {
+        *slot = code;
+    }
+    unsafe { CreateFontIndirectW(&lf) }
+}
+
+/// 选进 DC 问名字,核对系统是否真的解析到目标字体。
+fn font_face_matches(font: HFONT, face: &str) -> bool {
+    use windows::Win32::Graphics::Gdi::{GetDC, GetTextFaceW, ReleaseDC, SelectObject};
+
+    unsafe {
+        let dc = GetDC(None);
+        if dc.is_invalid() {
+            return false;
+        }
+        let old = SelectObject(dc, HGDIOBJ(font.0));
+        let mut buf = [0u16; 64];
+        let len = GetTextFaceW(dc, Some(&mut buf)).max(0) as usize;
+        if !old.is_invalid() {
+            SelectObject(dc, old);
+        }
+        ReleaseDC(None, dc);
+        if len == 0 {
+            return false;
+        }
+        let name = String::from_utf16_lossy(&buf[..len.min(buf.len())]);
+        name.trim_end_matches('\0') == face
+    }
+}
 
 /// 供自检输出:系统消息字体的原始高度与实际使用的高度。
 pub fn message_font_height() -> (i32, i32) {
@@ -1049,6 +1166,11 @@ pub fn module_path(name: &str) -> Option<String> {
 struct TabStrip {
     names: Vec<String>,
     selected: i32,
+    /// 悬停中的页签下标;-1 = 没有。
+    hover: i32,
+    /// 最近一次绘制时算好的每个页签 [left, right)。鼠标移动只查它,
+    /// 不再每次移动都重新量一遍文本宽度。
+    layout: Vec<(i32, i32)>,
     font: HFONT,
 }
 
@@ -1061,6 +1183,8 @@ fn tab_strip() -> &'static Mutex<TabStrip> {
         Mutex::new(TabStrip {
             names: Vec::new(),
             selected: 0,
+            hover: -1,
+            layout: Vec::new(),
             font: HFONT::default(),
         })
     })
@@ -1102,11 +1226,13 @@ unsafe fn paint_strip(hwnd: HWND) {
     let (client_w, client_h) = client_size(hwnd);
     let (_, _, accent_h) = strip_metrics(hwnd);
 
-    let (names, selected, font) = {
+    let (names, selected, hover, font) = {
         let strip = tab_strip().lock().unwrap();
-        (strip.names.clone(), strip.selected, strip.font)
+        (strip.names.clone(), strip.selected, strip.hover, strip.font)
     };
     let layout = strip_layout(hwnd, &names, font);
+    // 缓存布局:鼠标移动时的悬停判定直接查,不再重复量文本。
+    tab_strip().lock().unwrap().layout = layout.clone();
 
     unsafe {
         let full = RECT {
@@ -1129,6 +1255,7 @@ unsafe fn paint_strip(hwnd: HWND) {
         for (index, name) in names.iter().enumerate() {
             let (left, right) = layout[index];
             let chosen = index as i32 == selected;
+            let hovered = index as i32 == hover;
             let mut rect = RECT {
                 left,
                 top: 0,
@@ -1151,6 +1278,11 @@ unsafe fn paint_strip(hwnd: HWND) {
                 FillRect(hdc, &underline, accent);
                 let _ = DeleteObject(HGDIOBJ(accent.0));
             } else {
+                if hovered {
+                    let hover_bg = CreateSolidBrush(COLORREF(STRIP_HOVER_BG));
+                    FillRect(hdc, &rect, hover_bg);
+                    let _ = DeleteObject(HGDIOBJ(hover_bg.0));
+                }
                 let separator = CreateSolidBrush(COLORREF(STRIP_SEPARATOR));
                 let inset = (client_h / 5).max(2);
                 let line = RECT {
@@ -1198,6 +1330,41 @@ unsafe extern "system" fn strip_proc(
         WM_ERASEBKGND => LRESULT(1), // 背景全部由 WM_PAINT 负责,避免闪烁
         WM_PAINT => {
             unsafe { paint_strip(hwnd) };
+            LRESULT(0)
+        }
+        WM_MOUSEMOVE => {
+            let x = (lparam.0 & 0xFFFF) as u16 as i32;
+            let index = {
+                let strip = tab_strip().lock().unwrap();
+                strip
+                    .layout
+                    .iter()
+                    .position(|(left, right)| x >= *left && x < *right)
+                    .map(|i| i as i32)
+                    .unwrap_or(-1)
+            };
+            let changed = {
+                let mut strip = tab_strip().lock().unwrap();
+                let changed = strip.hover != index;
+                strip.hover = index;
+                changed
+            };
+            if changed {
+                track_mouse_leave(hwnd);
+                invalidate(hwnd);
+            }
+            LRESULT(0)
+        }
+        WM_MOUSELEAVE => {
+            let changed = {
+                let mut strip = tab_strip().lock().unwrap();
+                let changed = strip.hover != -1;
+                strip.hover = -1;
+                changed
+            };
+            if changed {
+                invalidate(hwnd);
+            }
             LRESULT(0)
         }
         WM_LBUTTONDOWN => {
@@ -1348,12 +1515,254 @@ pub fn ctl(
 ) -> HWND {
     let handle = create_window(class, text, WS_CHILD | WS_VISIBLE | style, ex, parent, id, 0, 0, 10, 10);
     move_to(handle, scale(r.0), scale(r.1), scale(r.2), scale(r.3));
+    // 推送按钮统一换成自绘圆角样式(白底描边);主色按钮走 accent_button 另装。
+    if class == "BUTTON" {
+        style_flat_button(handle);
+    }
     handle
 }
 
 /// 静态文本(左对齐)。
 pub fn label(parent: HWND, text: &str, id: usize, r: (i32, i32, i32, i32)) -> HWND {
     ctl("STATIC", text, SS_LEFT, 0, parent, id, r)
+}
+
+/// 只请求 `WM_MOUSELEAVE` 的鼠标跟踪(离开时系统通知一次,用于清悬停态)。
+fn track_mouse_leave(hwnd: HWND) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+    };
+
+    let mut tme = TRACKMOUSEEVENT {
+        cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+        dwFlags: TME_LEAVE,
+        hwndTrack: hwnd,
+        dwHoverTime: 0,
+    };
+    let _ = unsafe { TrackMouseEvent(&mut tme) };
+}
+
+/// 自绘按钮的悬停/按下状态(焦点与禁用直接问窗口,不存)。
+struct CustomButton {
+    hover: bool,
+    pressed: bool,
+    /// 主色(填充蓝)还是次级(白底描边)。
+    accent: bool,
+}
+
+/// 给已存在的按钮挂上自绘外观。
+fn attach_custom_button(hwnd: HWND, accent: bool) {
+    let state = Box::into_raw(Box::new(CustomButton {
+        hover: false,
+        pressed: false,
+        accent,
+    }));
+    set_user_data(hwnd, state as *mut c_void);
+    let _ = unsafe { SetWindowSubclass(hwnd, Some(custom_button_proc), 0, 0) };
+}
+
+/// 推送按钮统一换成自绘样式(白底描边圆角);复选框等其它按钮不动。
+/// `ctl()` 与主窗口的 `button()` 都会自动调用,目的是全应用按钮外观一致。
+pub fn style_flat_button(hwnd: HWND) {
+    let style = unsafe { GetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX(GWL_STYLE)) } as u32;
+    if matches!(style & BS_TYPEMASK, BS_PUSHBUTTON | BS_DEFPUSHBUTTON) {
+        attach_custom_button(hwnd, false);
+    }
+}
+
+/// 主色按钮:整块自绘(扁平、主色填充、白字)。
+///
+/// 仍是标准 `BUTTON` 控件 —— 回车默认、空格激活、Tab 焦点都照旧,只换画法。
+/// `style` 传 `BS_PUSHBUTTON` / `BS_DEFPUSHBUTTON`,后者保持「回车触发」语义。
+pub fn accent_button(
+    parent: HWND,
+    text: &str,
+    style: u32,
+    id: usize,
+    r: (i32, i32, i32, i32),
+) -> HWND {
+    let hwnd = create_window(
+        "BUTTON",
+        text,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | style,
+        0,
+        parent,
+        id,
+        0,
+        0,
+        10,
+        10,
+    );
+    move_to(hwnd, scale(r.0), scale(r.1), scale(r.2), scale(r.3));
+    attach_custom_button(hwnd, true);
+    hwnd
+}
+
+fn custom_state(hwnd: HWND) -> &'static mut CustomButton {
+    unsafe { &mut *user_data::<CustomButton>(hwnd) }
+}
+
+unsafe extern "system" fn custom_button_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    _ref: usize,
+) -> LRESULT {
+    match msg {
+        WM_PAINT => {
+            unsafe { paint_custom_button(hwnd) };
+            LRESULT(0)
+        }
+        WM_ERASEBKGND => LRESULT(1), // 背景全部由 WM_PAINT 负责,避免闪烁
+        WM_MOUSEMOVE => {
+            let s = custom_state(hwnd);
+            if !s.hover {
+                s.hover = true;
+                track_mouse_leave(hwnd);
+                invalidate(hwnd);
+            }
+            unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+        }
+        WM_MOUSELEAVE => {
+            custom_state(hwnd).hover = false;
+            invalidate(hwnd);
+            LRESULT(0)
+        }
+        WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => {
+            custom_state(hwnd).pressed = true;
+            invalidate(hwnd);
+            unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+        }
+        WM_LBUTTONUP => {
+            custom_state(hwnd).pressed = false;
+            invalidate(hwnd);
+            unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+        }
+        WM_KEYDOWN | WM_KEYUP => {
+            if wparam.0 as u32 == VK_SPACE {
+                custom_state(hwnd).pressed = msg == WM_KEYDOWN;
+                invalidate(hwnd);
+            }
+            unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+        }
+        WM_SETFOCUS | WM_KILLFOCUS | WM_ENABLE => {
+            invalidate(hwnd);
+            unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+        }
+        WM_NCDESTROY => {
+            let ptr = unsafe { user_data::<CustomButton>(hwnd) };
+            if !ptr.is_null() {
+                unsafe { drop(Box::from_raw(ptr)) };
+            }
+            unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+        }
+        _ => unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) },
+    }
+}
+
+/// 画按钮:圆角 + 填充 + 居中文字;主色款是蓝底白字,次级款是白底描边;
+/// 悬停/按下/禁用各态见取色分支;键盘焦点时主色款补一圈内描边、次级款边框变主色。
+unsafe fn paint_custom_button(hwnd: HWND) {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::Graphics::Gdi::{
+        BeginPaint, CreatePen, DrawTextW, EndPaint, FrameRect, RoundRect, SelectObject, SetBkMode,
+        SetTextColor, BACKGROUND_MODE, DRAW_TEXT_FORMAT, PAINTSTRUCT, PS_SOLID,
+    };
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, IsWindowEnabled};
+
+    let mut ps = PAINTSTRUCT::default();
+    let hdc = unsafe { BeginPaint(hwnd, &mut ps) };
+
+    let (w, h) = client_size(hwnd);
+    let enabled = unsafe { IsWindowEnabled(hwnd).as_bool() };
+    let focused = unsafe { GetFocus() == hwnd };
+    let s = custom_state(hwnd);
+
+    let (fill, fg, border) = if !enabled {
+        if s.accent {
+            (ACCENT_DISABLED_BG, ACCENT_DISABLED_TEXT, ACCENT_DISABLED_BG)
+        } else {
+            (BTN_DISABLED_BG, BTN_DISABLED_TEXT, FIELD_BORDER)
+        }
+    } else if s.accent {
+        let bg = if s.pressed {
+            ACCENT_PRESSED
+        } else if s.hover {
+            ACCENT_HOVER
+        } else {
+            ACCENT
+        };
+        (bg, ACCENT_TEXT, bg)
+    } else {
+        let bg = if s.pressed {
+            BTN_PRESSED_BG
+        } else if s.hover {
+            BTN_HOVER_BG
+        } else {
+            0x00FF_FFFF
+        };
+        let edge = if focused { ACCENT } else { FIELD_BORDER };
+        (bg, TEXT, edge)
+    };
+
+    unsafe {
+        let brush = CreateSolidBrush(COLORREF(fill));
+        let pen = CreatePen(PS_SOLID, 1, COLORREF(border));
+        let old_brush = SelectObject(hdc, HGDIOBJ(brush.0));
+        let old_pen = SelectObject(hdc, HGDIOBJ(pen.0));
+        // RoundRect 的椭圆宽高 = 两倍圆角半径(8 逻辑像素圆角)。
+        let corner = scale(RADIUS_BTN * 2);
+        let _ = RoundRect(hdc, 0, 0, w, h, corner, corner);
+        SelectObject(hdc, old_pen);
+        SelectObject(hdc, old_brush);
+        let _ = DeleteObject(HGDIOBJ(pen.0));
+        let _ = DeleteObject(HGDIOBJ(brush.0));
+
+        // 键盘焦点(主色款):内圈一条细线(填充已是主色,提示要克制)。
+        if focused && enabled && s.accent {
+            let inner = RECT {
+                left: scale(2),
+                top: scale(2),
+                right: w - scale(2),
+                bottom: h - scale(2),
+            };
+            let focus_brush = CreateSolidBrush(COLORREF(ACCENT_TEXT));
+            let _ = FrameRect(hdc, &inner, focus_brush);
+            let _ = DeleteObject(HGDIOBJ(focus_brush.0));
+        }
+
+        // WM_GETFONT 拿到的就是统一流程设好的粗体;万一还没设过,退回应用字体。
+        let mut font = HFONT(send_msg(hwnd, WM_GETFONT, 0, 0) as *mut c_void);
+        if font.is_invalid() {
+            font = super::app::state().font_bold;
+        }
+        let old_font = if font.is_invalid() {
+            Default::default()
+        } else {
+            SelectObject(hdc, HGDIOBJ(font.0))
+        };
+        SetBkMode(hdc, BACKGROUND_MODE(1)); // TRANSPARENT
+        SetTextColor(hdc, COLORREF(fg));
+        let mut wide: Vec<u16> = get_text(hwnd).encode_utf16().collect();
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: w,
+            bottom: h,
+        };
+        DrawTextW(
+            hdc,
+            &mut wide,
+            &mut rect,
+            DRAW_TEXT_FORMAT(DT_CENTER | DT_VCENTER | DT_SINGLELINE),
+        );
+        if !old_font.is_invalid() {
+            SelectObject(hdc, old_font);
+        }
+    }
+    let _ = unsafe { EndPaint(hwnd, &ps) };
 }
 
 /// 给一组控件套用字体。
