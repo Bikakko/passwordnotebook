@@ -6,6 +6,7 @@
 pub mod crypto;
 pub mod error;
 pub mod export_import;
+pub mod filelock;
 pub mod generator;
 pub mod header;
 pub mod model;

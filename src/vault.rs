@@ -10,6 +10,7 @@ use zeroize::Zeroizing;
 use crate::crypto::{self, KEY_LEN};
 use crate::error::{Result, VaultError};
 use crate::export_import::{DuplicateStrategy, ImportOutcome, dedupe_key, is_blank_entry};
+use crate::filelock::FileLock;
 use crate::header::VaultHeader;
 use crate::model::{now_secs, Document, Entry};
 use crate::recovery;
@@ -32,6 +33,12 @@ pub struct VaultService {
     /// 所以不靠各个 API 自己回滚(那要各自克隆一份文档),而是如实把这个状态标记出来,
     /// 让界面在状态栏持续提示,并在锁定/退出这类**真的会丢内存**的动作前拦一下。
     dirty: bool,
+    /// 解锁期间对库文件的占用:外部进程不能写/删/改名 `data.pkk`(可读)。
+    ///
+    /// 没有这把锁时,磁盘上的文件在两次写盘之间谁也不占 —— 可以被删除、替换,
+    /// 或被资源管理器的撤销(Ctrl+Z)回滚,而程序无感。见 `filelock.rs` 的说明。
+    /// 写盘时会被短暂释放再重新占用,见 [`write_without_lock`](Self::write_without_lock)。
+    lock_handle: Option<FileLock>,
 }
 
 impl Default for VaultService {
@@ -49,6 +56,7 @@ impl VaultService {
             path: None,
             unlocked_with_recovery: false,
             dirty: false,
+            lock_handle: None,
         }
     }
 
@@ -80,6 +88,8 @@ impl VaultService {
         self.document = None;
         self.file = None;
         self.unlocked_with_recovery = false;
+        // 放掉文件占用:锁定后库文件恢复可移动、可删除、可备份。
+        self.lock_handle = None;
         // 内存里的改动已经随 document 一起没了,标记要一起清掉,
         // 否则重新解锁后会误报一条根本不存在的内容。
         self.dirty = false;
@@ -192,8 +202,7 @@ impl VaultService {
             .map_err(|_| VaultError::WrongSecret("免密缓存已失效，请输入登录密码。"))?,
         );
         let document: Document = serde_json::from_slice(&plain)?;
-        self.install(path, file, dek, document, false);
-        Ok(())
+        self.install(path, file, dek, document, false)
     }
 
     /// 解锁 / 取回密钥后的最后一步:把整份状态装进服务。
@@ -204,7 +213,16 @@ impl VaultService {
         dek: Zeroizing<Vec<u8>>,
         document: Document,
         via_recovery: bool,
-    ) {
+    ) -> Result<()> {
+        // 先占住库文件再宣布解锁:占不住(被别的进程以写/删方式打开)就宁可
+        // 不开 —— 否则这次会话的写盘随时可能与外部改动撞车而互不察觉。
+        let lock_handle = FileLock::acquire(path).map_err(|e| {
+            VaultError::Io(std::io::Error::new(
+                e.kind(),
+                format!("密码本文件正被其他程序占用，无法取得独占（{e}）"),
+            ))
+        })?;
+        self.lock_handle = Some(lock_handle);
         self.file = Some(file);
         self.dek = Some(dek);
         self.document = Some(document);
@@ -212,6 +230,7 @@ impl VaultService {
         self.unlocked_with_recovery = via_recovery;
         // 刚从磁盘读出来,内存与磁盘天然一致。
         self.dirty = false;
+        Ok(())
     }
 
     fn adopt(&mut self, path: &Path, file: VaultFile, dek: Zeroizing<Vec<u8>>, via_recovery: bool) -> Result<()> {
@@ -223,18 +242,36 @@ impl VaultService {
             &file.header.payload_aad(),
         )?);
         let document: Document = serde_json::from_slice(&plain)?;
-        self.install(path, file, dek, document, via_recovery);
-        Ok(())
+        self.install(path, file, dek, document, via_recovery)
     }
 
     // ---------- 保存 ----------
 
+    /// 写盘专用:先放掉文件占用,执行写操作,然后**无论成败**都重新占用。
+    ///
+    /// 为什么必须放:原子改名顶替目标时,目标不能被「未共享删除」的句柄占着,
+    /// 我们自己这把也算(`MoveFileExW` 会跟着失败)。放锁到重新占锁之间只有
+    /// 几毫秒;重新占用失败时不报错 —— 数据已经落盘,只是本次会话剩余时间
+    /// 失去占用保护,下一次写盘还会再试。
+    fn write_without_lock<T>(&mut self, write: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        self.lock_handle = None;
+        let result = write(self);
+        if let Some(path) = self.path.clone()
+            && let Ok(lock) = FileLock::acquire(&path)
+        {
+            self.lock_handle = Some(lock);
+        }
+        result
+    }
+
     pub fn save(&mut self) -> Result<()> {
-        let path = self.path.clone().ok_or(VaultError::Locked)?;
-        let file = self.file.as_mut().ok_or(VaultError::Locked)?;
-        let dek = self.dek.as_ref().ok_or(VaultError::Locked)?;
-        let document = self.document.as_ref().ok_or(VaultError::Locked)?;
-        let result = write_document(file, dek, &path, document);
+        let result = self.write_without_lock(|s| {
+            let path = s.path.clone().ok_or(VaultError::Locked)?;
+            let file = s.file.as_mut().ok_or(VaultError::Locked)?;
+            let dek = s.dek.as_ref().ok_or(VaultError::Locked)?;
+            let document = s.document.as_ref().ok_or(VaultError::Locked)?;
+            write_document(file, dek, &path, document)
+        });
         // 落盘成功才清标记;失败时保持为「未落盘」,由界面如实提示。
         if result.is_ok() {
             self.dirty = false;
@@ -291,7 +328,7 @@ impl VaultService {
     fn rewrite_slot(&mut self, slot: Slot, secret: &[u8]) -> Result<()> {
         let path = self.path.clone().ok_or(VaultError::Locked)?;
         let dek = Zeroizing::new(self.dek.as_ref().ok_or(VaultError::Locked)?.to_vec());
-        let file = self.file.as_mut().ok_or(VaultError::Locked)?;
+        let file = self.file.as_ref().ok_or(VaultError::Locked)?;
 
         let mut header = file.header.clone();
         let (salt, nonce, aad) = match slot {
@@ -319,19 +356,24 @@ impl VaultService {
         )?;
 
         // 到这里才落到 self.file;写盘失败则把头部与该槽一起回滚。
-        let previous_header = std::mem::replace(&mut file.header, header);
-        let previous_wrapped = match slot {
-            Slot::Password => std::mem::replace(&mut file.password_wrapped, wrapped),
-            Slot::Recovery => std::mem::replace(&mut file.recovery_wrapped, wrapped),
-        };
-        if let Err(e) = file.write_atomic(&path) {
-            file.header = previous_header;
-            match slot {
-                Slot::Password => file.password_wrapped = previous_wrapped,
-                Slot::Recovery => file.recovery_wrapped = previous_wrapped,
+        // 写盘要走「放锁 → 写 → 重新占锁」(见 write_without_lock)。
+        self.write_without_lock(|s| {
+            let file = s.file.as_mut().ok_or(VaultError::Locked)?;
+            let previous_header = std::mem::replace(&mut file.header, header);
+            let previous_wrapped = match slot {
+                Slot::Password => std::mem::replace(&mut file.password_wrapped, wrapped),
+                Slot::Recovery => std::mem::replace(&mut file.recovery_wrapped, wrapped),
+            };
+            if let Err(e) = file.write_atomic(&path) {
+                file.header = previous_header;
+                match slot {
+                    Slot::Password => file.password_wrapped = previous_wrapped,
+                    Slot::Recovery => file.recovery_wrapped = previous_wrapped,
+                }
+                return Err(e);
             }
-            return Err(e);
-        }
+            Ok(())
+        })?;
 
         // 主密码不再是最初解开它的那个:恢复码临时会话的标记随之清掉。
         if matches!(slot, Slot::Password) {
@@ -644,10 +686,12 @@ impl VaultService {
         }
 
         if outcome.changed() {
-            let path = self.path.clone().ok_or(VaultError::Locked)?;
-            let file = self.file.as_mut().ok_or(VaultError::Locked)?;
-            let dek = self.dek.as_ref().ok_or(VaultError::Locked)?;
-            write_document(file, dek, &path, &draft)?;
+            self.write_without_lock(|s| {
+                let path = s.path.clone().ok_or(VaultError::Locked)?;
+                let file = s.file.as_mut().ok_or(VaultError::Locked)?;
+                let dek = s.dek.as_ref().ok_or(VaultError::Locked)?;
+                write_document(file, dek, &path, &draft)
+            })?;
             // draft 是从 self.document 克隆的,所以这一次落盘把之前所有没能落盘的
             // 改动也一并写出去了 —— 标记可以清。
             self.dirty = false;
