@@ -445,6 +445,12 @@ fn core_checks() -> usize {
         check!("移入回收站", unlocked.move_to_bin(&id).is_ok());
         check!("回收站中有一条", unlocked.deleted_count() == 1);
         check!("从回收站恢复", unlocked.restore_from_bin(&id).is_ok());
+        // 彻底删除仅限回收站:活跃条目必须被拦下,再入回收站才删得掉。
+        check!(
+            "活跃条目不能被彻底删除",
+            matches!(unlocked.purge(&id), Err(crate::error::VaultError::Invalid(_)))
+        );
+        check!("再次移入回收站", unlocked.move_to_bin(&id).is_ok());
         check!("彻底删除", unlocked.purge(&id).is_ok());
 
         check!(
@@ -483,9 +489,12 @@ fn core_checks() -> usize {
         // ——实测正是这一条让「CSV 导出带 BOM」「JSON 备份可导入」「重复导入幂等」
         // 三项一起误报 FAIL(0.2.0 没有这段自检,所以当时是通的)。
         let late_id = unlocked.active_entries().next().map(|e| e.id.clone());
+        let cleaned = late_id
+            .as_deref()
+            .is_some_and(|id| unlocked.move_to_bin(id).is_ok() && unlocked.purge(id).is_ok());
         check!(
             "自检用的临时条目已清掉(不影响后续导出检查)",
-            late_id.is_some_and(|id| unlocked.purge(&id).is_ok()) && unlocked.entry_count() == 0
+            cleaned && unlocked.entry_count() == 0
         );
     }
 
@@ -752,6 +761,11 @@ fn core_checks() -> usize {
             "剪贴板读写",
             super::clipboard::get_text().is_some_and(|t| t.as_str() == "pnb-clipboard-probe")
         );
+        // 复制出去的文本必须带「不进 Win+V 历史、不同步云端」的排除标记。
+        check!(
+            "剪贴板排除标记(Win+V/云同步)",
+            super::clipboard::has_exclusion_markers()
+        );
     } else {
         println!("  SKIP  剪贴板(当前会话不可用)");
     }
@@ -870,7 +884,7 @@ fn core_checks() -> usize {
             && super::window_state::show_cmd_is_valid(super::sys::SW_SHOWMAXIMIZED as u32)
     );
 
-    check!("系统空闲时间可读取", super::idle::idle_seconds() < 86_400);
+    check!("系统空闲时间可读取", super::idle::idle_seconds().is_some_and(|s| s < 86_400));
 
     let _ = std::fs::remove_dir_all(&dir);
     failures

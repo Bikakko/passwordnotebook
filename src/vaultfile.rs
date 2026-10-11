@@ -42,8 +42,23 @@ impl VaultFile {
     pub fn read_header(path: &Path) -> Result<VaultHeader, VaultError> {
         let mut buf = [0u8; PREFIX_LEN];
         let mut file = std::fs::File::open(path)?;
-        std::io::Read::read_exact(&mut file, &mut buf)?;
+        read_exact_or_truncated(&mut file, &mut buf)?;
         VaultHeader::from_prefix(&buf)
+    }
+
+    /// 只读文件头与主密码槽(105 + 48 字节),不读载荷 ——
+    /// 「校验一个主密码是否仍然有效」的场景用不到后面那几 MB。
+    pub fn read_header_and_password_slot(
+        path: &Path,
+    ) -> Result<(VaultHeader, [u8; WRAPPED_KEY_LEN]), VaultError> {
+        let mut buf = [0u8; PREFIX_LEN + WRAPPED_KEY_LEN];
+        let mut file = std::fs::File::open(path)?;
+        read_exact_or_truncated(&mut file, &mut buf)?;
+
+        let header = VaultHeader::from_prefix(&buf[..PREFIX_LEN])?;
+        let mut slot = [0u8; WRAPPED_KEY_LEN];
+        slot.copy_from_slice(&buf[PREFIX_LEN..]);
+        Ok((header, slot))
     }
 
     pub fn read(path: &Path) -> Result<Self, VaultError> {
@@ -93,24 +108,49 @@ impl VaultFile {
         out.extend_from_slice(&(self.payload.len() as i32).to_le_bytes());
         out.extend_from_slice(&self.payload);
 
-        let tmp = path.with_extension(format!("{}.tmp", crate::paths::VAULT_EXTENSION));
-
-        let result = (|| -> std::io::Result<()> {
-            let mut file = std::fs::File::create(&tmp)?;
-            file.write_all(&out)?;
-            // 先落盘,再改名 —— 顺序不能反。
-            file.sync_all()?;
-            drop(file);
-            replace_file(&tmp, path)
-        })();
-
-        if let Err(e) = result {
-            // 失败就把临时文件清掉,别在数据目录里留垃圾。
-            let _ = std::fs::remove_file(&tmp);
-            return Err(e.into());
-        }
+        write_atomic_bytes(path, &out)?;
         Ok(())
     }
+}
+
+/// 读满一段固定长度的前缀 / 槽位:文件不够长时报「损坏」而不是底层 IO 错误 ——
+/// `UnexpectedEof` 直接透出去,界面上会显示成「文件操作失败（failed to fill
+/// whole buffer）」,把「文件被截断」误装成系统 IO 故障。
+fn read_exact_or_truncated(file: &mut std::fs::File, buf: &mut [u8]) -> Result<(), VaultError> {
+    std::io::Read::read_exact(file, buf).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::UnexpectedEof {
+            VaultError::Format("文件已损坏或被截断。".into())
+        } else {
+            VaultError::from(e)
+        }
+    })
+}
+
+/// 原子写一段字节:同目录临时文件 → `sync_all` → 改名顶替;失败清理临时文件。
+///
+/// 保险库落盘、免密缓存与明文导出共用这一套写法;临时文件按「原路径 + .tmp」
+/// 命名(与各处的写盘失败注入测试约定一致)。`sync_all` 的顺序不能省,理由见
+/// [`VaultFile::write_atomic`]。
+pub(crate) fn write_atomic_bytes(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut tmp_name = path.as_os_str().to_os_string();
+    tmp_name.push(".tmp");
+    let tmp = Path::new(&tmp_name);
+
+    let result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::File::create(tmp)?;
+        file.write_all(bytes)?;
+        // 先落盘,再改名 —— 顺序不能反。
+        file.sync_all()?;
+        drop(file);
+        replace_file(tmp, path)
+    })();
+
+    if let Err(e) = result {
+        // 失败就把临时文件清掉,别在数据目录里留垃圾。
+        let _ = std::fs::remove_file(tmp);
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// 用改名把临时文件顶替成正式文件(两者同目录,改名是原子的)。
@@ -255,7 +295,34 @@ mod tests {
 
         let bytes = std::fs::read(&path).unwrap();
         std::fs::write(&path, &bytes[..PREFIX_LEN - 1]).unwrap();
-        assert!(VaultFile::read_header(&path).is_err());
+        assert!(matches!(
+            VaultFile::read_header(&path),
+            Err(VaultError::Format(_))
+        ));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 主密码槽的单读必须与完整读取一致;槽都没读满(文件被截断)必须报错。
+    #[test]
+    fn read_password_slot_matches_full_read() {
+        let dir = std::env::temp_dir().join(format!("pnb-rs-slot-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("v.pkk");
+
+        let file = sample();
+        file.write_atomic(&path).unwrap();
+
+        let (header, slot) = VaultFile::read_header_and_password_slot(&path).unwrap();
+        assert_eq!(header.password_salt, file.header.password_salt);
+        assert_eq!(slot.as_slice(), file.password_wrapped.as_slice());
+
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::write(&path, &bytes[..PREFIX_LEN + WRAPPED_KEY_LEN - 1]).unwrap();
+        assert!(matches!(
+            VaultFile::read_header_and_password_slot(&path),
+            Err(VaultError::Format(_))
+        ));
 
         std::fs::remove_dir_all(&dir).ok();
     }

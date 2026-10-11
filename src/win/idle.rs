@@ -8,15 +8,18 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use super::sys::{SPI_GETSCREENSAVEACTIVE, SPI_GETSCREENSAVETIMEOUT};
 
-/// 距离最后一次键鼠输入的秒数。
-pub fn idle_seconds() -> u64 {
+/// 距离最后一次键鼠输入的秒数;拿不到输入信息时返回 `None`。
+///
+/// 失败方向刻意是 fail-closed:调用方(空闲自动锁定)把 `None` 当作
+/// 「已空闲」处理 —— 安全看门狗宁可误锁一次,也不能因为检测失败而永不锁定。
+pub fn idle_seconds() -> Option<u64> {
     unsafe {
         let mut info = LASTINPUTINFO {
             cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
             dwTime: 0,
         };
         if !GetLastInputInfo(&mut info).as_bool() {
-            return 0;
+            return None;
         }
 
         // dwTime 只有 32 位;和 64 位计数器取相同低位后比较,可正确处理回绕。
@@ -27,7 +30,7 @@ pub fn idle_seconds() -> u64 {
         } else {
             (0x1_0000_0000 - last) + now
         };
-        elapsed_ms / 1000
+        Some(elapsed_ms / 1000)
     }
 }
 

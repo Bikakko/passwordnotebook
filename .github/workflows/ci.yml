@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: x86_64-pc-windows-gnu
+      # build.rs 在 Windows 目标下要调 x86_64-w64-mingw32-windres 编资源,
+      # 与本地 WSL 构建链的前置依赖一致(Windows runner 默认没有该工具)。
+      - run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+      - run: cargo test --locked
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo clippy --locked --all-targets --target x86_64-pc-windows-gnu -- -D warnings
+      # 真实链接一次:check/clippy 看不到链接器层面的问题。
+      - run: cargo build --locked --release --target x86_64-pc-windows-gnu

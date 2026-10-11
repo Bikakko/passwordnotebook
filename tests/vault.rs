@@ -5,7 +5,9 @@
 
 use std::path::PathBuf;
 
+use password_notebook::crypto::WRAPPED_KEY_LEN;
 use password_notebook::error::VaultError;
+use password_notebook::header::PREFIX_LEN;
 use password_notebook::model::{now_secs, Entry};
 use password_notebook::recovery;
 use password_notebook::vault::VaultService;
@@ -86,8 +88,8 @@ fn wrong_password_is_rejected() {
     let err = VaultService::new().open(&tv.path, "not-the-password").unwrap_err();
     assert!(matches!(err, VaultError::WrongSecret(_)), "got {err:?}");
 
-    assert!(!VaultService::verify_master_password(&tv.path, "nope"));
-    assert!(VaultService::verify_master_password(&tv.path, PASSWORD));
+    assert!(!VaultService::verify_master_password(&tv.path, "nope").unwrap());
+    assert!(VaultService::verify_master_password(&tv.path, PASSWORD).unwrap());
 }
 
 #[test]
@@ -139,6 +141,18 @@ fn update_and_delete_flow() {
     vault.restore_from_bin(&target.id).unwrap();
     assert_eq!(vault.entry_count(), 1);
 
+    // 彻底删除仅限回收站:活跃条目要被拦下(界面本来就从回收站页调它,
+    // 这是 lib 层的纵深防御)。
+    assert!(matches!(
+        vault.purge(&target.id),
+        Err(VaultError::Invalid(_))
+    ));
+    assert_eq!(vault.entry_count(), 1, "被拦下的彻底删除不能动到条目");
+
+    // 未知 id 维持「无事发生」的旧行为。
+    assert!(vault.purge("not-an-id").is_ok());
+
+    vault.move_to_bin(&target.id).unwrap();
     vault.purge(&target.id).unwrap();
     assert_eq!(vault.entry_count(), 0);
     assert_eq!(vault.deleted_count(), 0);
@@ -233,7 +247,7 @@ fn recovery_code_unlocks_and_resets_password() {
     let mut after = VaultService::new();
     after.open(&tv.path, NEW_PASSWORD).unwrap();
     assert!(!after.unlocked_with_recovery());
-    assert!(!VaultService::verify_master_password(&tv.path, PASSWORD));
+    assert!(!VaultService::verify_master_password(&tv.path, PASSWORD).unwrap());
 }
 
 /// 重设主密码失败时,不能把库留在「内存已解锁」状态。
@@ -294,8 +308,8 @@ fn change_master_password_keeps_recovery_code_and_data() {
     vault.add_entry(entry("数据", "c", &[])).unwrap();
     vault.change_master_password(PASSWORD, NEW_PASSWORD).unwrap();
 
-    assert!(VaultService::verify_master_password(&tv.path, NEW_PASSWORD));
-    assert!(!VaultService::verify_master_password(&tv.path, PASSWORD));
+    assert!(VaultService::verify_master_password(&tv.path, NEW_PASSWORD).unwrap());
+    assert!(!VaultService::verify_master_password(&tv.path, PASSWORD).unwrap());
 
     // 改密码不应该影响恢复码槽与载荷。
     let mut via_recovery = VaultService::new();
@@ -317,7 +331,7 @@ fn change_master_password_requires_correct_current() {
     vault.open(&tv.path, PASSWORD).unwrap();
     let err = vault.change_master_password("wrong-current", NEW_PASSWORD).unwrap_err();
     assert!(matches!(err, VaultError::WrongSecret(_)));
-    assert!(VaultService::verify_master_password(&tv.path, PASSWORD));
+    assert!(VaultService::verify_master_password(&tv.path, PASSWORD).unwrap());
 }
 
 #[test]
@@ -358,8 +372,8 @@ fn failed_password_change_rolls_back_header() {
     std::fs::remove_dir(&blocker).unwrap();
     vault.save().unwrap();
 
-    assert!(VaultService::verify_master_password(&tv.path, PASSWORD));
-    assert!(!VaultService::verify_master_password(&tv.path, NEW_PASSWORD));
+    assert!(VaultService::verify_master_password(&tv.path, PASSWORD).unwrap());
+    assert!(!VaultService::verify_master_password(&tv.path, NEW_PASSWORD).unwrap());
 }
 
 /// 重新生成恢复码时若写盘失败,同样不能把半成品头部留在内存里。
@@ -713,4 +727,62 @@ fn editing_an_entry_keeps_its_favorite() {
     let after = vault.active_entries().next().unwrap();
     assert!(after.favorite, "编辑不应清掉收藏");
     assert_eq!(after.notes, "改过的备注");
+}
+
+// ---------- verify_master_password 的错误区分 ----------
+
+/// 「读不了」与「密码错」必须分开:前者把具体错误原样带出来,后者才是
+/// `Ok(false)`。「当前登录密码不正确」只应在密码真的不正确时出现。
+#[test]
+fn verify_master_password_distinguishes_unreadable_files() {
+    let tv = TempVault::new("verify-err");
+    tv.create(PASSWORD);
+
+    assert!(!VaultService::verify_master_password(&tv.path, "nope").unwrap());
+    assert!(VaultService::verify_master_password(&tv.path, PASSWORD).unwrap());
+
+    // 文件不存在 → 具体错误,而不是「密码不对」。
+    let missing = tv.dir.join("missing.pkk");
+    assert!(VaultService::verify_master_password(&missing, PASSWORD).is_err());
+
+    // 只读头部与主密码槽:载荷整个截掉也照样能校验密码。
+    let bytes = std::fs::read(&tv.path).unwrap();
+    std::fs::write(&tv.path, &bytes[..PREFIX_LEN + WRAPPED_KEY_LEN]).unwrap();
+    assert!(VaultService::verify_master_password(&tv.path, PASSWORD).unwrap());
+
+    // 组合非法的头部(m=8 KiB 配 p=8,Argon2 要求 m ≥ 8p)在解析层就按
+    // 损坏拒绝,不再拖到派生阶段报「Argon2 参数无效」。
+    let mut combo = std::fs::read(&tv.path).unwrap();
+    combo[13..17].copy_from_slice(&8u32.to_le_bytes());
+    std::fs::write(&tv.path, &combo).unwrap();
+    assert!(VaultService::verify_master_password(&tv.path, PASSWORD).is_err());
+
+    // 头部损坏 → Err(Format),不再是被吞掉的 false。
+    let mut broken = std::fs::read(&tv.path).unwrap();
+    broken[0] = b'X';
+    std::fs::write(&tv.path, &broken).unwrap();
+    let err = VaultService::verify_master_password(&tv.path, PASSWORD).unwrap_err();
+    assert!(matches!(err, VaultError::Format(_)), "got {err:?}");
+}
+
+// ---------- 密钥世代 ----------
+
+/// 本机免密缓存靠 `key_generation` 换代失效:改主密码必须递增,
+/// 重生成恢复码不动它(数据密钥与主密码都没变)。
+#[test]
+fn key_generation_bumps_only_on_password_change() {
+    let tv = TempVault::new("keygen");
+    tv.create(PASSWORD);
+
+    let mut vault = VaultService::new();
+    vault.open(&tv.path, PASSWORD).unwrap();
+    let (_, start, _) = vault.quick_unlock_material().unwrap();
+
+    vault.regenerate_recovery_code().unwrap();
+    let (_, after_regen, _) = vault.quick_unlock_material().unwrap();
+    assert_eq!(after_regen, start, "重生成恢复码不该动密钥世代");
+
+    vault.change_master_password(PASSWORD, NEW_PASSWORD).unwrap();
+    let (_, after_change, _) = vault.quick_unlock_material().unwrap();
+    assert_eq!(after_change, start + 1, "改主密码必须让免密缓存换代失效");
 }

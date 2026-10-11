@@ -42,6 +42,10 @@ impl VaultHeader {
     }
 
     /// 指定 KDF 参数生成头部(仅测试会用到非默认参数)。
+    ///
+    /// 写端**不做**读端那套范围校验:传入界外参数会造出「自己都读不回」的
+    /// 库(读端的 `from_prefix` 会按损坏拒绝)。正式创建走 [`Self::generate`]
+    /// 的默认值。
     pub fn generate_with(m_cost_kib: u32, t_cost: u32, p_cost: u32) -> Result<Self, VaultError> {
         Ok(Self {
             m_cost_kib,
@@ -130,12 +134,16 @@ impl VaultHeader {
         };
 
         // KDF 参数在密文校验**之前**就会被拿去算密钥:上界必须在这里卡住。
-        // 头部字节被改坏时 t_cost 可以是天文数字,解锁会先照它把 CPU 跑满
-        // (在 UI 线程上表现为程序假死、连窗口都关不掉);正常写入方
-        // (64 MiB / 3 轮 / 4 路)远小于这些上界。
-        if !(8..=1_048_576).contains(&header.m_cost_kib)
-            || !(1..=64).contains(&header.t_cost)
-            || !(1..=64).contains(&header.p_cost)
+        // 坏头部若允许 1 GiB / 64 轮 / 64 路,解锁会在 UI 线程上按它把内存
+        // 与 CPU 跑满(表现为程序假死,低内存机器直接 OOM —— release 构建是
+        // panic = "abort",没有提示)。上界单维度不超过默认值(64 MiB / 3 /
+        // 4)的 4 倍、p 为 2 倍,组合最坏约 16 倍默认派生耗时;此处同时要求
+        // m ≥ 8p(Argon2 自身的约束),组合非法也按头部无效拒绝,不让它拖到
+        // 派生阶段才报错。正常写入方(含集成测试的 8 KiB / 1 / 1)都远小于上界。
+        if !(8..=262_144).contains(&header.m_cost_kib)
+            || !(1..=12).contains(&header.t_cost)
+            || !(1..=8).contains(&header.p_cost)
+            || header.m_cost_kib < header.p_cost * 8
         {
             return Err(VaultError::Format("密码本头部无效。".into()));
         }
@@ -254,5 +262,38 @@ mod tests {
         let mut prefix = VaultHeader::generate().unwrap().to_prefix();
         prefix[13..17].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(VaultHeader::from_prefix(&prefix).is_err());
+    }
+
+    /// 单维度上界不超过默认值的 4 倍(p 为 2 倍),下界保住集成测试的廉价
+    /// 参数:每个维度「上界内通过、越界 1 拒绝」,下界外的值同样拒绝。
+    #[test]
+    fn kdf_bounds_cover_normal_params_and_reject_excess() {
+        let defaults = VaultHeader::generate().unwrap().to_prefix();
+        assert!(VaultHeader::from_prefix(&defaults).is_ok());
+
+        let cheap = VaultHeader::generate_with(8, 1, 1).unwrap().to_prefix();
+        assert!(VaultHeader::from_prefix(&cheap).is_ok());
+
+        let patch = |offset: usize, value: u32| {
+            let mut prefix = VaultHeader::generate().unwrap().to_prefix();
+            prefix[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+            VaultHeader::from_prefix(&prefix)
+        };
+
+        assert!(patch(5, 262_144).is_ok(), "m 在上界内应通过");
+        assert!(patch(5, 262_145).is_err(), "m 超过 256 MiB 应拒绝");
+        assert!(patch(5, 7).is_err(), "m 低于 8 KiB 应拒绝");
+
+        assert!(patch(9, 12).is_ok(), "t 在上界内应通过");
+        assert!(patch(9, 13).is_err(), "t 超过 12 轮应拒绝");
+        assert!(patch(9, 0).is_err(), "t = 0 应拒绝");
+
+        assert!(patch(13, 8).is_ok(), "p 在上界内应通过");
+        assert!(patch(13, 9).is_err(), "p 超过 8 路应拒绝");
+        assert!(patch(13, 0).is_err(), "p = 0 应拒绝");
+
+        // Argon2 要求 m ≥ 8p:两个维度各自都在界内、组合非法同样要拒绝。
+        let combo = VaultHeader::generate_with(8, 1, 8).unwrap().to_prefix();
+        assert!(VaultHeader::from_prefix(&combo).is_err(), "m=8 / p=8 组合非法");
     }
 }

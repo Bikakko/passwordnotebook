@@ -240,7 +240,7 @@ pub fn export(document: &Document, format: Format, options: ExportOptions) -> Re
     }
 }
 
-/// 导出到文件,返回导出的条目数。
+/// 导出到文件(原子写:失败不会留下半截清单),返回导出的条目数。
 pub fn export_to_path(
     document: &Document,
     path: &Path,
@@ -248,7 +248,7 @@ pub fn export_to_path(
     options: ExportOptions,
 ) -> Result<usize> {
     let text = export(document, format, options)?;
-    std::fs::write(path, text.as_bytes())?;
+    crate::vaultfile::write_atomic_bytes(path, text.as_bytes())?;
     Ok(active_entries(document).len())
 }
 
@@ -1618,5 +1618,36 @@ mod tests {
             split_tags("a; b |a;;"),
             vec!["a".to_string(), "b".to_string()]
         );
+    }
+
+    /// 导出与保险库落盘共用同一套原子写:成功不留临时文件;失败时原文件
+    /// 内容不受破坏(截断式 `fs::write` 会在写一半失败时留下半截明文清单)。
+    #[test]
+    fn export_to_path_is_atomic() {
+        let dir = std::env::temp_dir().join(format!("pnb-rs-export-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("export.csv");
+
+        let document = sample_document();
+        let count =
+            export_to_path(&document, &path, Format::Csv, ExportOptions::default()).unwrap();
+        assert_eq!(count, 2);
+        assert!(std::fs::read_to_string(&path).unwrap().starts_with('\u{feff}'));
+        assert!(
+            !path.with_file_name("export.csv.tmp").exists(),
+            "成功导出后不该残留临时文件"
+        );
+
+        // 预置一份旧内容,再用同名目录顶住临时文件路径 —— 写必定失败。
+        std::fs::write(&path, "旧内容").unwrap();
+        std::fs::create_dir(path.with_file_name("export.csv.tmp")).unwrap();
+        assert!(export_to_path(&document, &path, Format::Csv, ExportOptions::default()).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "旧内容",
+            "写失败不能破坏原文件"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

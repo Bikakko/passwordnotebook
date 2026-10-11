@@ -19,7 +19,6 @@
 //!   大致等于「Windows 账户本身」,而不是强加密。要更严就勾选
 //!   「免密解锁时要求 Windows Hello 验证」,或关闭免密解锁。
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use windows::core::PCWSTR;
@@ -34,6 +33,10 @@ const FLAG_REQUIRE_HELLO: u8 = 0x01;
 /// 发生锁屏/手动锁定后置位:下次启动需要验证,而不是直接免密进入。
 const FLAG_LOCKED: u8 = 0x02;
 
+/// DPAPI 的附加熵。**不提供额外防护** —— 它是硬编码常量,同一 Windows
+/// 账户下的任何进程都能同样构造。这里保留它只是惯例(也让本程序的 DPAPI
+/// blob 与账户下其它数据略有区分);真正的防护在「何时调用」这一层:
+/// 锁屏/手动锁定即作废缓存、可选 Hello 二次验证(见文件头注释)。
 fn entropy() -> Vec<u8> {
     b"PasswordNotebook.QuickUnlock.v1".to_vec()
 }
@@ -49,23 +52,10 @@ pub fn exists() -> bool {
 
 /// 原子写入:先写同目录临时文件,刷盘后再改名顶替。
 ///
-/// 直接用 `fs::write` 是"先截断再写",中途崩溃会留下残缺文件;
-/// 这里复用保险库那套改名逻辑,避免出现半截缓存。
+/// 直接用 `fs::write` 是"先截断再写",中途崩溃会留下残缺文件;这里复用
+/// 保险库与明文导出共用的那套原子写,避免出现半截缓存。
 fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension("dat.tmp");
-
-    let result = (|| -> std::io::Result<()> {
-        let mut file = std::fs::File::create(&tmp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        drop(file);
-        crate::vaultfile::replace_file(&tmp, path)
-    })();
-
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    result
+    crate::vaultfile::write_atomic_bytes(path, bytes)
 }
 
 /// 写入缓存。

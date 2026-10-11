@@ -91,10 +91,30 @@ impl VaultService {
     }
 
     /// 只校验主密码是否正确,不改变当前解锁状态。
-    pub fn verify_master_password(path: &Path, master_password: &str) -> bool {
-        VaultFile::read(path)
-            .map(|file| unwrap_slot(master_password.as_bytes(), &file, Slot::Password).is_ok())
-            .unwrap_or(false)
+    ///
+    /// 只读文件头与主密码槽(105 + 48 字节),不把整份载荷读进内存 ——
+    /// 解一个 48 字节的密钥槽用不到后面那几 MB。
+    /// `Ok(false)` 是「能读到头部与槽、但主密码槽没能解开」—— 密码不对,
+    /// 或者槽本身被篡改(AEAD 区分不了这两者);读不了(文件被删、被占、
+    /// 损坏)则返回具体错误 —— 把两者混成同一种结果会把用户往错误的方向引,
+    /// 「当前登录密码不正确」只应在槽真的解不开时出现。
+    pub fn verify_master_password(path: &Path, master_password: &str) -> Result<bool> {
+        let (header, wrapped) = VaultFile::read_header_and_password_slot(path)?;
+        let result = unwrap_with_secret(
+            master_password.as_bytes(),
+            &header.password_salt,
+            &header.password_nonce,
+            &wrapped,
+            &header.password_slot_aad(),
+            header.m_cost_kib,
+            header.t_cost,
+            header.p_cost,
+        );
+        match result {
+            Ok(_) => Ok(true),
+            Err(VaultError::WrongSecret(_)) => Ok(false),
+            Err(e) => Err(e),
+        }
     }
 
     // ---------- 创建与解锁 ----------
@@ -298,6 +318,9 @@ impl VaultService {
             Slot::Password => {
                 header.password_salt = crypto::random_array()?;
                 header.password_nonce = crypto::random_array()?;
+                // u32 回绕需要 40 亿次改密 —— 现实里到不了。真回绕时世代变为 0,
+                // 与本机缓存(停在此前的世代上,且每次解锁/改密都会重写)依然对不上:
+                // 「对不上即失效」由 dpapi::load 的等值判断自动生效,无需额外处理。
                 header.key_generation = header.key_generation.wrapping_add(1);
                 (header.password_salt, header.password_nonce, header.password_slot_aad())
             }
@@ -344,7 +367,7 @@ impl VaultService {
 
     pub fn change_master_password(&mut self, current: &str, new: &str) -> Result<()> {
         let path = self.path.clone().ok_or(VaultError::Locked)?;
-        if !Self::verify_master_password(&path, current) {
+        if !Self::verify_master_password(&path, current)? {
             return Err(VaultError::WrongSecret("当前登录密码不正确。"));
         }
         self.flush_pending_before_slot_write();
@@ -510,8 +533,16 @@ impl VaultService {
         self.commit_in_place()
     }
 
+    /// 彻底删除一条**回收站中**的条目。
+    ///
+    /// 回收站判定是纵深防御:界面只在回收站页调它,但作为 lib API 也不该
+    /// 允许绕过「先删除、再彻底删除」的产品语义直接抹掉活跃条目。
+    /// 未知 id 维持「无事发生」的旧行为。
     pub fn purge(&mut self, id: &str) -> Result<()> {
         let document = self.document.as_mut().ok_or(VaultError::Locked)?;
+        if document.entries.iter().any(|e| e.id == id && !e.is_deleted()) {
+            return Err(VaultError::Invalid("彻底删除只对回收站中的条目生效。".into()));
+        }
         document.entries.retain(|e| e.id != id);
         self.commit_in_place()
     }

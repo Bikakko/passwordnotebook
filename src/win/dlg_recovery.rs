@@ -151,7 +151,8 @@ fn save_code(hwnd: HWND, code: &str) {
         code
     );
 
-    match std::fs::write(&path, content) {
+    // 原子写:中途失败不会留下「看起来像完整恢复码」的半截文件。
+    match crate::vaultfile::write_atomic_bytes(std::path::Path::new(&path), content.as_bytes()) {
         Ok(()) => ui::info(hwnd, "恢复码已保存。", "保存完成"),
         Err(e) => ui::error(hwnd, &format!("保存失败（{e}）"), "保存失败"),
     }

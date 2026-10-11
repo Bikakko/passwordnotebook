@@ -2125,8 +2125,10 @@ pub fn on_timer(hwnd: HWND, id: usize) {
             if !app::state().vault.is_unlocked() || dialog::is_modal_open() {
                 return;
             }
+            // `is_none_or`:拿不到输入信息(检测失败)时按已超时处理 ——
+            // 安全看门狗宁可误锁一次,也不能永不锁定(fail-closed)。
             if let Some(timeout) = idle_timeout_seconds()
-                && idle::idle_seconds() >= timeout
+                && idle::idle_seconds().is_none_or(|idle| idle >= timeout)
             {
                 // 空闲锁定不能弹窗打断,未落盘的改动只能靠状态栏提示。
                 lock_vault(hwnd, false);
@@ -2247,7 +2249,10 @@ fn unlock_with_hello(hwnd: HWND) {
         return;
     };
     let Some((dek, _, _)) = dpapi::load(header.vault_id, header.key_generation) else {
+        // 缓存(此刻)不可用:直接作废,免得同一个坏缓存每次都被重新读到。
+        dpapi::clear();
         set_unlock_error(hwnd, "免密缓存已失效，请输入登录密码。");
+        apply_mode(hwnd);
         return;
     };
 
